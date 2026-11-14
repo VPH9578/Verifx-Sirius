@@ -1,260 +1,132 @@
-# 🤖 AI-Powered Telegram Signal Copier Bot — Claude AI + Python + MetaTrader 5 | Free & Open Source
+# 🚀 Sirius Telegram Signal Copier (Sirius TSC)
 
-> Monitors any Telegram signal channel, uses **Claude AI** to parse signals in any format, and automatically places trades on MetaTrader 5 with stop loss and take profit in under 3 seconds.
-
-[![YouTube Tutorial](https://img.shields.io/badge/YouTube-Tutorial-red?style=for-the-badge&logo=youtube)](https://youtu.be/zutNG-eNFjI)
-[![Claude AI](https://img.shields.io/badge/Claude_AI-Powered-orange?style=for-the-badge&logo=anthropic)](https://console.anthropic.com)
-[![Telegram](https://img.shields.io/badge/Telegram-Community-blue?style=for-the-badge&logo=telegram)](https://t.me/codepipss)
-[![Python](https://img.shields.io/badge/Python-3.12-green?style=for-the-badge&logo=python)](https://www.python.org/downloads/release/python-3129/)
-[![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](LICENSE)
+> **High-Performance Multi-Platform Signal Copier & Execution Engine**  
+> Connects Telegram signal channels to **MetaTrader 5 (MT5)**, **MetaTrader 4 (MT4)**, and **cTrader (Spotware)** with real-time AI signal parsing, intelligent trade management, and multi-account dispatch.
 
 ---
 
-## 📺 Full Video Tutorial
+## 🌟 Key Highlights & Architecture
 
-Watch the complete build + live demo on YouTube:
+Sirius TSC is a full-featured, institutional-grade automated signal copy trading system built in Python for Windows environments. It bridges raw Telegram trading calls directly to your execution brokers with sub-second latency and extreme memory efficiency.
 
-▶️ **[I Built a Free AI Telegram Signal Copier Bot with Python & MetaTrader 5](https://youtu.be/zutNG-eNFjI)**
+### 1. Multi-Platform Execution
+* **MetaTrader 5 (MT5):** Native high-speed execution using the official MetaTrader5 Python package.
+* **cTrader (Spotware):** Direct local low-latency TCP bridge via custom cTrader Open API / cBot driver ([cbot/SiriusBridge.cs](cbot/SiriusBridge.cs)).
+* **MetaTrader 4 (MT4):** Ultra-fast local socket/file IPC bridge via EA ([mt4/SiriusBridge.mq4](mt4/SiriusBridge.mq4)).
+* **Multi-Account Dispatching:** Independent parallel account worker processes (`account_worker.py`, `ctrader_worker.py`, `mt4_worker.py`) routing specific signal providers to distinct broker accounts with unique risk profiles.
 
----
+### 2. Hybrid AI & Regex Parsing Engine
+* **Gemini AI Integration:** Rotates multiple Gemini API keys (`gemini-2.5-flash`) to parse complex, messy, non-standard, or conversational Telegram signals.
+* **Deterministic Rule Engine:** High-speed cached regex rules per signal provider (`provider_parser_manager.py`) to execute unambiguous signals instantly without external API latency.
+* **Typo & Price Invariant Auto-Fixing:** Automatically validates and corrects symbol syntax, decimal point errors, inverted stop losses, and TP ladder inconsistencies against live broker tick data.
 
-## ❓ What Is This?
+### 3. Advanced Trade Management
+* **Dynamic Multi-TP Split:** Customizable lot splitting across TP1, TP2, TP3 (e.g., 50% / 30% / 20%).
+* **Trailing & Breakeven Automation:** Automated SL shift to Breakeven (`ENTRY`), `TP1`, or `TP2` upon reaching target profit levels.
+* **Smart Spread Offset:** Entry and SL adjustments that factor in real-time broker spreads.
+* **Partial Closes & Modifies:** Real-time handling of "close half", "close TP1", "move SL to entry", and "delete pending" Telegram messages.
 
-A free, open-source bot that:
-
-1. **Monitors** any Telegram signal channel you're subscribed to in real time
-2. **Sends** each message to **Claude AI** which reads and understands the signal — no matter how it's formatted
-3. **Places** the trade on **MetaTrader 5** automatically with the correct stop loss and take profit
-4. **Displays** everything in a live Rich terminal dashboard
-
-**The paid tools that do this charge $50–$200.** This one is completely free.
-
----
-
-## 🧠 Why Claude AI Instead of Regex?
-
-Most signal copiers use hardcoded regex patterns to parse signals. The moment a signal provider changes their format — even slightly — the copier breaks.
-
-This bot uses **Claude AI (Anthropic)** to read signals the way a human would. It doesn't care about formatting. All of these work:
-
-```
-GOLD BUY NOW
-Entry: 4718
-SL: 4700
-TP1: 4730
-TP2: 4750
-```
-
-```
-XAUUSD SELL NOW @ 4735
-TP : 4720
-TP : 4710
-SL : 4750
-```
-
-```
-Buy gold at market, stop loss 4690, take profit 4725 and 4740
-```
-
-```
-Close all gold trades
-```
-
-And if the channel posts commentary, news, or trade updates like "+120 pips running! Set breakeven" — Claude knows it's not a signal and skips it.
+### 4. Real-Time Web Dashboard & Diagnostics
+* **FastAPI Backend:** Lightweight asynchronous web server (`web_server.py`) serving live analytics and controls.
+* **Interactive Web Interface:** Single-page dashboard (`web/templates/index.html`) displaying account balances, open positions, recent signals, parser accuracy, and execution logs.
+* **Signal-Watch Diagnostics:** Background monitoring subsystem (`signal_watch.py`) detecting skipped or rejected signals, analyzing terminal journal logs, and firing immediate alerts.
+* **Built-in Backtester Module:** Isolated historical backtesting suite (`backtester/`) for simulating provider performance against historical tick data.
 
 ---
 
-## ⚡ Features
-
-- **AI-powered signal parsing** — works with any signal format from any provider
-- **All 6 order types** — market buy/sell, buy/sell limit, buy/sell stop
-- **Multiple take profits** — splits lot across TP1, TP2, TP3 automatically
-- **Close signals** — detects "close all" instructions and closes positions
-- **Live Rich dashboard** — connection status, signals, positions with P&L, trade history
-- **JSON trade logging** — every trade saved for review
-- **Real-time monitoring** — catches signals instantly via Telethon (not polling)
-- **Any channel** — works with any Telegram channel you're subscribed to (public, private, VIP)
-
----
-
-## 📁 Project Structure
+## 📁 Repository Overview
 
 ```
-telegram_signal_copier/
-├── config.py              # All settings and environment variables
-├── signal_listener.py     # Telethon client — monitors Telegram channel
-├── signal_parser.py       # Claude AI signal parser — the brain
-├── mt5_executor.py        # MetaTrader 5 trade execution
-├── dashboard.py           # Rich terminal dashboard
-├── trade_logger.py        # JSON trade logging
-├── main.py                # Entry point — ties everything together
-├── .env                   # Your API keys and credentials (create this)
-└── requirements.txt       # Python packages
+├── .env.example                     # Environment variables template
+├── accounts_config.example.json     # Multi-account configuration template
+├── main.py                          # Main application entry point & process orchestrator
+├── config.py                        # Centralized application settings & env loader
+├── web_server.py                    # FastAPI web server for dashboard and API controls
+├── account_manager.py               # Process supervisor for multi-account workers
+├── account_worker.py                # Dedicated worker process for MT5 accounts
+├── ctrader_worker.py                # Dedicated worker process for cTrader accounts
+├── mt4_worker.py                    # Dedicated worker process for MT4 accounts
+├── signal_listener.py               # Telethon Telegram client listening to channels & topics
+├── signal_parser.py                 # Hybrid AI + Regex signal extraction engine
+├── signal_watch.py                  # Self-healing diagnostic scanner & root-cause analyzer
+├── symbol_mapper.py                 # Dynamic symbol mapping across brokers (e.g. Gold -> XAUUSD.sc)
+├── provider_analytics.py            # Provider win-rate, profit, and reliability tracking
+├── provider_parser_manager.py       # Custom per-provider parsing rules manager
+├── db.py                            # SQLite database schema & persistence layer
+├── alert.py                         # Instant Telegram alert dispatch utility
+├── push_to_github.bat               # 1-Click tool to stage, commit, and push updates to GitHub
+├── Launch Sirius.bat                # Supervisor startup script with auto-crash recovery
+├── Stop Sirius.bat                  # Clean shutdown script for all background workers
+├── cbot/                            # cTrader bridge cBot source code
+├── mt4/                             # MT4 bridge Expert Advisor source code
+├── symbol_maps/                     # Broker-specific symbol dictionary files
+├── backtester/                      # Isolated backtesting engine and reports generator
+└── web/                             # Dashboard web templates and static assets
 ```
 
 ---
 
-## 🔧 Requirements
+## 🚀 Getting Started
 
-- **Python 3.12** (not 3.13 or 3.14 — MT5 library doesn't support them yet)
-- **MetaTrader 5** installed and logged into your broker account
-- **Telegram account** subscribed to the signal channel you want to monitor
-- **Telegram API credentials** (free — from https://my.telegram.org)
-- **Anthropic API key** (from https://console.anthropic.com — $5 minimum credits)
+### Prerequisites
+* Windows 10/11 or Windows Server (VPS)
+* Python 3.12+ (64-bit)
+* MetaTrader 5, MetaTrader 4, or cTrader installed locally
+
+### Installation
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/VPH9578/Verifx-Sirius.git
+   cd Verifx-Sirius
+   ```
+
+2. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Configure Environment Secrets:**
+   * Copy `.env.example` to `.env`:
+     ```bash
+     cp .env.example .env
+     ```
+   * Fill in your Telegram API credentials (from [my.telegram.org](https://my.telegram.org)), MetaTrader credentials, and your Gemini API key(s).
+
+4. **Configure Trading Accounts:**
+   * Copy `accounts_config.example.json` to `accounts_config.json`:
+     ```bash
+     cp accounts_config.example.json accounts_config.json
+     ```
+   * Add your MT5, MT4, and cTrader account logins, risk percentages, and provider subscriptions.
 
 ---
 
-## 🚀 Setup
+## 🖥️ Running the Application
 
-### 1. Clone the repo
+### Option A: 1-Click Launcher (Recommended)
+Double-click **`Launch Sirius.bat`**. This launches:
+1. The background Telegram listener
+2. Multi-broker worker processes
+3. The real-time web dashboard on `http://127.0.0.1:8000`
+4. Automated crash recovery and health monitor
 
-```bash
-git clone https://github.com/siriusforex-ai/telegram_signal_copier.git
-cd telegram_signal_copier
-```
-
-### 2. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Get your API keys
-
-| Key | Where to get it | Cost |
-|-----|-----------------|------|
-| Telegram API ID & Hash | https://my.telegram.org | Free |
-| Telegram Phone Number | Your registered number | — |
-| MetaTrader 5 Credentials | Your broker | Free (demo account) |
-| Anthropic API Key | https://console.anthropic.com | $5 minimum |
-
-### 4. Create your `.env` file
-
-Create a file called `.env` in the project folder:
-
-```env
-# Telegram (get from https://my.telegram.org)
-TELEGRAM_API_ID=your_telegram_api_id
-TELEGRAM_API_HASH=your_telegram_api_hash
-TELEGRAM_PHONE=+your_phone_number
-
-# Signal channel to monitor (username without @ or channel ID)
-SIGNAL_CHANNEL=Forex
-
-# MetaTrader 5
-MT5_ACCOUNT=your_mt5_account_number
-MT5_PASSWORD=your_mt5_password
-MT5_SERVER=your_broker_server
-
-# Claude AI (get from https://console.anthropic.com)
-ANTHROPIC_API_KEY=your_anthropic_api_key
-```
-
-### 5. Run the bot
-
-Make sure MetaTrader 5 is open and logged in, then:
-
+### Option B: Terminal Command
 ```bash
 python main.py
 ```
 
-On the first run, Telethon will ask for your phone number and a verification code from Telegram. After that it saves a session file and connects automatically.
+### Stopping the Copier
+Double-click **`Stop Sirius.bat`** to gracefully close all background workers and disconnect safely from brokers.
 
 ---
 
-## 📊 Dashboard Preview
+## 🔒 Security Best Practices
 
-```
-╭──────────────────────────────────────────────────────────────╮
-│   CodePips  —  Telegram Signal Copier  |  2026-04-24 20:59  │
-╰──────────────────────────────────────────────────────────────╯
-
-╭─────────── Status ───────────╮ ╭──────── GOLD ────────╮
-│   MetaTrader 5:  Connected   │ │   Balance: $9,370    │
-│   Telegram:      Active      │ │   Bid/Ask: 4725/4726 │
-│   Channel:       Forex VIP   │ │   Spread:  46 pts    │
-╰──────────────────────────────╯ ╰──────────────────────╯
-
-╭──────────────────── Signals ─────────────────────╮
-│   1 received  |  1 executed  |  0 skipped        │
-│   Last signal: BUY MARKET SL: 4700 TP: 4730     │
-╰──────────────────────────────────────────────────╯
-
-╭──────────────────── Positions (3) ───────────────╮
-│   745853324  LONG  0.01  Entry: 4717.50  $-0.76  │
-│   745853328  LONG  0.01  Entry: 4717.34  $-0.60  │
-│   745853337  LONG  0.01  Entry: 4717.34  $-0.60  │
-╰──────────────────────────────────────────────────╯
-```
+* **Zero Leaks:** Always keep `.env`, `accounts_config.json`, `*.session`, and `*.db` files untracked. They are already listed in `.gitignore`.
+* **GitHub Syncing:** Use the included **`push_to_github.bat`** script to push code changes safely without leaking credentials.
 
 ---
 
-## 🔄 How It Works
-
-```
-Signal posted in Telegram channel
-        │
-        ▼
-Telethon catches it instantly (real-time, not polling)
-        │
-        ▼
-Message sent to Claude AI for parsing
-        │
-        ▼
-Claude returns: direction, entry, SL, TP[], order type
-        │
-        ▼
-Is it a real signal? ──No──▶ Skip, keep listening
-        │
-       Yes
-        │
-        ▼
-MetaTrader 5 places the trade (splits lot across TPs)
-        │
-        ▼
-Dashboard updates, trade logged to JSON
-```
-
----
-
-## ⚠️ Important Notes
-
-- **Always test with a small lot size first** (0.01) before scaling up
-- **Not all signal providers are profitable** — the bot executes faster, it doesn't make bad signals good
-- **Protect your session file** — the `.session` file gives access to your Telegram account. Never share it or upload it to GitHub
-- **Anthropic API costs** — each signal costs less than $0.01 to parse. $5 in credits will last months
-- **Python 3.12 only** — the MetaTrader 5 library does not work with Python 3.13 or 3.14
-
----
-
-## 🔗 Links
-
-- 📺 **YouTube Tutorial:** https://youtu.be/76wGAj3WBo8
-- 📢 **Telegram Channel:** https://t.me/codepipss
-- 💬 **Telegram Community:** https://t.me/+qH90fZfIYeNmYzM1
-- 🐦 **Twitter/X:** https://x.com/codepips_
-
----
-
-## 📄 Setup Links
-
-- 🔹 Telegram API credentials: https://my.telegram.org
-- 🔹 Anthropic (Claude AI) console: https://console.anthropic.com
-- 🔹 Python 3.12 download: https://www.python.org/downloads/release/python-3129/
-- 🔹 MetaTrader 5 download: https://www.metatrader5.com/en/download
-
----
-
-## ⚖️ Disclaimer
-
-This project is for **educational purposes only**. I am not a financial advisor. Nothing in this repository constitutes financial advice. Always use a demo account for testing. Trade at your own risk.
-
----
-
-## 📜 License
-
-MIT License — free to use, modify, and distribute.
-
----
-
-**Built with ❤️ by [CodePips](https://youtube.com/@CodePips)**
+## 📄 License
+This project is proprietary and confidential. Unauthorized copying or redistribution is strictly prohibited.
