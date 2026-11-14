@@ -5,3 +5,7 @@ httpx
 python-dotenv
 pandas
 numpy
+
+fastapi
+uvicorn
+jinja2

@@ -1,0 +1,28 @@
+{
+  "-1002385852838:62159": {
+    "channel_name": "Lorax Layer VIP - ICT trader",
+    "notes": "This provider consistently uses '@' as a delimiter for prices. Action types are 'now' for market orders and 'limit' for pending orders, both followed by '@' and the entry price. Stop Loss is denoted by 'Sl@' and Take Profit by 'Tp1@' or 'Tp2@'. Instrument symbols are 3-5 uppercase letters. Spaces around '@' and action modifiers can vary but are handled by '\\s*'. No other delimiters like ':', '-', '/', or '#' are observed for prices or levels in these samples.",
+    "re_action": "(Buy|Sell)(?:\\s+(now|limit))?",
+    "re_entry": "(?:now|limit)\\s*@\\s*(\\d+(?:\\.\\d+)?)",
+    "re_sl": "Sl\\s*@\\s*(\\d+(?:\\.\\d+)?)",
+    "re_tp": "Tp[-\\s]*[123]\\s*@\\s*(\\d+(?:\\.\\d+)?)",
+    "re_instrument": "#?\\b(GOLD|XAUUSD|XAU/USD|SILVER|XAGUSD|USOUSD|OIL|WTI|BRENT|BTCUSD|BTC|ETHUSD|ETH|US30|NAS100|USTEC|SPX500|US500|GER40|DAX|(?:USD|EUR|GBP|JPY|AUD|NZD|CAD|CHF)/?(?:USD|EUR|GBP|JPY|AUD|NZD|CAD|CHF))\\b",
+    "sample_matches": 15,
+    "sample_total": 15,
+    "accuracy_pct": 100.0,
+    "updated_at": 1793665297
+  },
+  "-1002385852838:40484": {
+    "channel_name": "Lorax Layer VIP - Trading central Fx VIP",
+    "notes": "Signals begin with an emoji (🔴/🟢) followed by 'Buy Limit' or 'Sell Limit', then the instrument. Entry price is marked by '@', consisting of a primary price and an optional second price in parentheses. Take Profit (TP) levels are numbered (e.g., '#1') and separated by double newlines, each with a colon. Stop Loss (SL) is on a separate line after a '__' separator, also containing a primary price and an optional second price in parentheses.",
+    "re_action": "(?:🔴|🟢)\\s*(Buy Limit|Sell Limit)",
+    "re_entry": "@\\s*(\\d+(?:\\.\\d+)?)(?:\\s*\\(\\d+(?:\\.\\d+)?\\))?",
+    "re_sl": "SL:\\s*(\\d+(?:\\.\\d+)?)(?:\\s*\\(\\d+(?:\\.\\d+)?\\))?",
+    "re_tp": "TP\\s*#\\d+:\\s*(\\d+(?:\\.\\d+)?)",
+    "re_instrument": "([A-Z]+)\\s*@",
+    "sample_matches": 15,
+    "sample_total": 15,
+    "accuracy_pct": 100.0,
+    "updated_at": 1793665332
+  }
+}

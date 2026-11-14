@@ -19,6 +19,7 @@ TELEGRAM_PHONE = os.getenv("TELEGRAM_PHONE", "")
 # The signal channel to monitor
 # Use the @username (without @) or the channel ID (negative number)
 SIGNAL_CHANNEL = os.getenv("SIGNAL_CHANNEL", "Forex")
+SIGNAL_TOPIC_ID = int(os.getenv("SIGNAL_TOPIC_ID", "0"))
 
 # ═══════════════════════════════════════════════
 #  METATRADER 5
@@ -26,16 +27,22 @@ SIGNAL_CHANNEL = os.getenv("SIGNAL_CHANNEL", "Forex")
 MT5_ACCOUNT = int(os.getenv("MT5_ACCOUNT", "1301110952"))
 MT5_PASSWORD = os.getenv("MT5_PASSWORD", "your_password")
 MT5_SERVER = os.getenv("MT5_SERVER", "XMGlobal-MT5 6")
+MT5_PATH = os.getenv("MT5_PATH", "")
 
 # Symbol mapping — signal channels say "Gold" or "XAUUSD"
 # but your broker might call it "GOLD" or "XAUUSD" or "GOLD.s"
-SYMBOL = "GOLD"
+SYMBOL = "XAUUSD.sc"
 
 # ═══════════════════════════════════════════════
-#  CLAUDE AI (Signal Parsing)
+#  GEMINI AI (Signal Parsing)
 # ═══════════════════════════════════════════════
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
+_raw_gemini_keys = os.getenv("GEMINI_API_KEYS", "")
+if _raw_gemini_keys:
+    GEMINI_API_KEYS = [k.strip() for k in _raw_gemini_keys.split(",") if k.strip()]
+else:
+    _single_gemini_key = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_API_KEYS = [_single_gemini_key] if _single_gemini_key else []
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 # ═══════════════════════════════════════════════
 #  TRADE SETTINGS
@@ -65,3 +72,24 @@ TRADE_LOG_FILE = "trade_log.json"
 # Telethon saves your login session here
 # After first login you won't need to verify again
 SESSION_FILE = "signal_copier_session"
+
+# ═══════════════════════════════════════════════
+#  BACKTESTER ISOLATION & NON-INTERFERENCE RULE
+# ═══════════════════════════════════════════════
+# STRICT ARCHITECTURAL DIRECTIVE:
+# While building and running the Backtester, it MUST NOT interfere with,
+# modify, or block any Sirius Copier live trading code (mt5_executor.py,
+# signal_listener.py, signal_parser.py, db.py / stats.db, or main.py).
+#
+# Allowed Integration Points ONLY:
+# 1. UI Adjustment: Adding the "Backtester" navigation tab under "Dashboard"
+#    in the left-hand pull-out sidebar and its view panel in web/templates/index.html.
+# 2. Web Router: Mounting the isolated `backtester` FastAPI router in web_server.py.
+# 3. Read-Only Access: Reading historical messages via Telegram and historical
+#    OHLC candles via MT5 (copy_rates_range / copy_rates_from_pos). Never send
+#    live orders or mutate live trade state from the backtester.
+BACKTESTER_ENABLED = True
+BACKTESTER_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backtester", "backtest.db")
+BACKTESTER_DEFAULT_BALANCE = 10000.0
+BACKTESTER_DEFAULT_PENDING_EXPIRY_MINS = 30
+

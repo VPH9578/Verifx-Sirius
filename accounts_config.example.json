@@ -1,0 +1,39 @@
+{
+    "acc_1": {
+        "id": "acc_1",
+        "name": "Primary MT5 Account",
+        "platform": "mt5",
+        "mt5_login": 12345678,
+        "mt5_password": "your_mt5_password",
+        "mt5_server": "YourBroker-Live",
+        "mt5_path": "C:\\Program Files\\Your Broker MT5\\terminal64.exe",
+        "magic_base": 400000,
+        "enabled": true,
+        "providers": [
+            "543"
+        ],
+        "provider_settings": {
+            "543": {
+                "account_id": "acc_1",
+                "trading_enabled": true,
+                "risk_mode": "percent",
+                "risk_value": 1,
+                "max_lot": 10,
+                "tp1_percent": 50,
+                "tp2_percent": 30,
+                "tp3_percent": 20,
+                "tp1_close_percent": 50,
+                "sl_tp1_strategy": "none",
+                "sl_tp2_strategy": "ENTRY",
+                "sl_tp3_strategy": "TP1",
+                "sl_breakeven_at": "none",
+                "spread_offset_entry": true,
+                "slippage_max_pips": 20,
+                "market_order_pips": 50,
+                "reverse_strategy": false,
+                "invert_directions": false,
+                "comment_tag": "Sirius"
+            }
+        }
+    }
+}

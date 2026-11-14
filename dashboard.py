@@ -11,6 +11,7 @@ from rich.layout import Layout
 from rich.text import Text
 from rich.live import Live
 from rich.columns import Columns
+from rich.console import Group
 from datetime import datetime
 import time
 
@@ -26,7 +27,7 @@ console = Console()
 def build_header():
     """Build the header panel."""
     header = Text()
-    header.append("  CodePips", style="bold cyan")
+    header.append("  Verifx Official", style="bold cyan")
     header.append("  —  ", style="dim")
     header.append("Telegram Signal Copier", style="bold white")
     header.append("  |  ", style="dim")
@@ -54,11 +55,16 @@ def build_status_table():
         tg_status = Text("Waiting...", style="bold yellow")
     table.add_row(Text("Telegram:", style="dim"), tg_status)
 
-    # Channel
+    # Group
     table.add_row(
-        Text("Channel:", style="dim"),
+        Text("Group:", style="dim"),
         Text(str(listener_state["channel_name"]), style="bold white"),
     )
+    if config.SIGNAL_TOPIC_ID != 0:
+        table.add_row(
+            Text("Subtopic:", style="dim"),
+            Text(f"VIP Topic ({config.SIGNAL_TOPIC_ID})", style="bold white"),
+        )
 
     return Panel(table, title="Status", border_style="dim")
 
@@ -70,8 +76,8 @@ def build_account_panel():
     table.add_column()
 
     acc = get_account_info()
-    tick = get_tick()
-    sym = get_symbol_info()
+    tick = get_tick(config.SYMBOL)
+    sym = get_symbol_info(config.SYMBOL)
 
     if acc:
         table.add_row(Text("Balance:", style="dim"), Text(f"${acc.balance:,.2f}", style="bold white"))
@@ -218,33 +224,42 @@ def build_trade_log():
 
 
 def build_dashboard():
-    """Build the full dashboard layout."""
+    """Build the full dashboard layout cleanly in memory before rendering."""
+    header = build_header()
+    top_cols = Columns([build_status_table(), build_account_panel()], equal=True)
+    sig_panel = build_signal_panel()
+    pos_panel = build_positions_table()
+    log_panel = build_trade_log()
+
+    full_view = Group(
+        header,
+        Text(""),
+        top_cols,
+        Text(""),
+        sig_panel,
+        Text(""),
+        pos_panel,
+        Text(""),
+        log_panel,
+    )
     console.clear()
-
-    console.print(build_header())
-    console.print()
-
-    # Status and account side by side
-    console.print(Columns([build_status_table(), build_account_panel()], equal=True))
-    console.print()
-
-    # Signals
-    console.print(build_signal_panel())
-    console.print()
-
-    # Positions
-    console.print(build_positions_table())
-    console.print()
-
-    # Trade log
-    console.print(build_trade_log())
+    console.print(full_view)
 
 
 def run_dashboard_loop():
     """Continuously refresh the dashboard."""
+    import sys
+    is_tty = hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
     while True:
         try:
-            build_dashboard()
+            if is_tty:
+                build_dashboard()
+            else:
+                time.sleep(10)
+                continue
         except Exception as e:
-            console.print(f"[red][ERROR] Dashboard: {e}[/red]")
+            try:
+                console.print(f"[red][ERROR] Dashboard: {e}[/red]")
+            except Exception:
+                pass
         time.sleep(config.REFRESH_INTERVAL)

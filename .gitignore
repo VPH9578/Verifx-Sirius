@@ -1,0 +1,62 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment variables & secrets (CRITICAL)
+.env
+.env.local
+.env.*.local
+accounts_config.json
+accounts_config.json.*
+accounts_config.bak*
+telegram_session_string.txt
+
+# Telegram sessions
+*.session
+*.session-journal
+
+# Database files & SQLite runtime journals
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+backtester.db
+sirius.db
+copier.db
+stats.db
+
+# Dynamic state & live tracking logs
+trade_state.json
+trade_state_*.json
+trade_log.json
+active_account.json
+telegram_dialogs_cache.json
+*.lock
+sirius_copier.lock
+
+# Logs and screenshots
+*.log
+*.png
+*.jpg
+*.jpeg
+
+# Analysis & Audit dumps
+channel_messages_audit.json
+ctrader_channel_audit.json
+fast_detected_signals.json
+signals_split_analysis.json
+zero_trade_cTrader_providers.json
+
+# Local virtual environments & IDEs
+venv/
+.venv/
+env/
+.idea/
+.vscode/
+
+# OS artifacts
+Thumbs.db
+Desktop.ini
+.DS_Store
