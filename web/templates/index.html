@@ -2673,6 +2673,110 @@
         </div>
     </div>
 
+    <!-- Full-Screen Symbol Trade History Chart Modal (MT5 & cTrader) -->
+    <div id="fullscreen-trade-chart-modal" class="hidden fixed inset-0 z-[150] bg-[#0e111a] flex flex-col w-screen h-screen overflow-hidden">
+        <!-- Top Fullscreen Toolbar -->
+        <div class="px-4 py-2.5 border-b border-theme-border bg-theme-sidebar flex flex-wrap items-center justify-between gap-2 shrink-0">
+            <div class="flex flex-wrap items-center gap-3 min-w-0">
+                <div class="flex items-center gap-2">
+                    <span class="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 shrink-0">
+                        <i class="fa-solid fa-chart-line text-sm"></i>
+                    </span>
+                    <div class="min-w-0">
+                        <div class="flex items-center gap-2">
+                            <h2 id="fs-chart-title" class="text-sm sm:text-base font-bold text-white tracking-wide truncate">Symbol Trade History Chart</h2>
+                            <span id="fs-chart-plat-badge"></span>
+                        </div>
+                        <p id="fs-chart-subtitle" class="text-[10px] sm:text-[11px] text-slate-400 truncate">Full-screen broker candlestick history &amp; trade stickers</p>
+                    </div>
+                </div>
+                <div class="h-5 w-px bg-theme-border hidden sm:block"></div>
+                <div class="flex flex-wrap items-center gap-1.5" id="ps-sym-pills"></div>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+                <!-- Mode Toggle -->
+                <div class="flex items-center gap-1 bg-theme-card p-1 rounded-lg border border-theme-border">
+                    <button type="button" id="ps-mode-all-btn" onclick="setPsChartMode('all')" class="px-2.5 py-1 rounded text-[11px] font-bold bg-theme-accent text-white transition-all">All Trades</button>
+                    <button type="button" id="ps-mode-single-btn" onclick="setPsChartMode('single')" class="px-2.5 py-1 rounded text-[11px] font-bold text-slate-400 hover:text-white transition-all">Focused Trade</button>
+                </div>
+
+                <!-- Timeframes -->
+                <div class="flex items-center gap-1" id="fs-tf-btns">
+                    <button type="button" data-ps-tf="M1" onclick="setPsChartTimeframe('M1')" class="px-2 py-1 rounded-lg text-[11px] font-bold transition-all border border-theme-border bg-theme-bg/60 text-slate-300 hover:text-white">M1</button>
+                    <button type="button" data-ps-tf="M5" onclick="setPsChartTimeframe('M5')" class="px-2 py-1 rounded-lg text-[11px] font-bold transition-all border border-theme-border bg-theme-bg/60 text-slate-300 hover:text-white">M5</button>
+                    <button type="button" data-ps-tf="M15" onclick="setPsChartTimeframe('M15')" class="px-2 py-1 rounded-lg text-[11px] font-bold transition-all border border-theme-border bg-theme-bg/60 text-slate-300 hover:text-white">M15</button>
+                    <button type="button" data-ps-tf="M30" onclick="setPsChartTimeframe('M30')" class="px-2 py-1 rounded-lg text-[11px] font-bold transition-all border border-theme-border bg-theme-bg/60 text-slate-300 hover:text-white">M30</button>
+                    <button type="button" data-ps-tf="H1" onclick="setPsChartTimeframe('H1')" class="px-2 py-1 rounded-lg text-[11px] font-bold transition-all border border-theme-border bg-theme-bg/60 text-slate-300 hover:text-white">H1</button>
+                    <button type="button" data-ps-tf="H4" onclick="setPsChartTimeframe('H4')" class="px-2 py-1 rounded-lg text-[11px] font-bold transition-all border border-theme-border bg-theme-bg/60 text-slate-300 hover:text-white">H4</button>
+                </div>
+
+                <!-- Zoom Controls -->
+                <div class="flex items-center gap-1 bg-theme-card px-1.5 py-0.5 rounded-lg border border-theme-border">
+                    <button type="button" onclick="zoomPsChart(0.65)" class="px-2 py-0.5 rounded hover:bg-theme-border text-xs font-bold text-slate-200 transition-all" title="Zoom In (+)">
+                        <i class="fa-solid fa-magnifying-glass-plus"></i>
+                    </button>
+                    <button type="button" onclick="zoomPsChart(1.5)" class="px-2 py-0.5 rounded hover:bg-theme-border text-xs font-bold text-slate-200 transition-all" title="Zoom Out (-)">
+                        <i class="fa-solid fa-magnifying-glass-minus"></i>
+                    </button>
+                    <button type="button" onclick="resetPsChartZoom()" class="px-2 py-0.5 rounded hover:bg-theme-border text-[11px] font-bold text-slate-300 transition-all" title="Fit Chart">
+                        <i class="fa-solid fa-compress mr-1"></i>Fit
+                    </button>
+                </div>
+
+                <!-- Trade Stepper -->
+                <div class="flex items-center gap-1 bg-theme-card px-1.5 py-0.5 rounded-lg border border-theme-border">
+                    <button type="button" onclick="stepPsChartTrade(-1)" class="px-2 py-0.5 rounded hover:bg-theme-border text-xs font-bold text-slate-200 transition-all" title="Previous Trade">
+                        <i class="fa-solid fa-chevron-left"></i>
+                    </button>
+                    <span id="ps-trade-counter" class="text-[11px] font-mono font-bold text-slate-300 px-1.5">Trade 1 / 1</span>
+                    <button type="button" onclick="stepPsChartTrade(1)" class="px-2 py-0.5 rounded hover:bg-theme-border text-xs font-bold text-slate-200 transition-all" title="Next Trade">
+                        <i class="fa-solid fa-chevron-right"></i>
+                    </button>
+                </div>
+
+                <!-- Toggle Bottom Trade History Table -->
+                <button type="button" id="fs-toggle-drawer-btn" onclick="toggleFullscreenTradeDrawer()" class="px-2.5 py-1.5 rounded-lg bg-theme-card hover:bg-theme-border text-xs font-bold text-slate-200 border border-theme-border transition-all" title="Toggle Trade History List">
+                    <i class="fa-solid fa-table-list mr-1"></i><span id="fs-toggle-drawer-text">Hide List</span>
+                </button>
+
+                <!-- Close Fullscreen Button -->
+                <button type="button" onclick="closeFullscreenTradeChart()" class="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-xs font-extrabold transition-all flex items-center gap-1.5">
+                    <i class="fa-solid fa-xmark"></i> Close Chart
+                </button>
+            </div>
+        </div>
+
+        <!-- Trade Summary Strip -->
+        <div id="ps-active-trade-banner" class="px-4 py-2 bg-theme-card/90 border-b border-theme-border flex flex-wrap items-center justify-between gap-2 text-xs shrink-0"></div>
+
+        <!-- Main Full-Screen Candlestick Canvas + Sticker Overlay -->
+        <div id="ps-chart-container-outer" class="relative flex-1 w-full min-h-0 bg-[#131722] overflow-hidden">
+            <div id="ps-lw-canvas" class="w-full h-full"></div>
+            <svg id="ps-lw-svg-layer" class="absolute inset-0 w-full h-full pointer-events-none z-[15]"></svg>
+            <div id="ps-lw-sticker-layer" class="absolute inset-0 w-full h-full pointer-events-none overflow-hidden z-[20]"></div>
+            <div id="ps-lw-loading" class="hidden absolute inset-0 bg-black/60 backdrop-blur-[1px] z-[30] flex items-center justify-center text-xs font-bold text-slate-200">
+                <i class="fa-solid fa-circle-notch fa-spin mr-2 text-theme-accent text-base"></i><span id="ps-lw-loading-text">Loading broker candles...</span>
+            </div>
+        </div>
+
+        <!-- Legend Bar -->
+        <div class="px-4 py-1.5 bg-theme-sidebar border-t border-theme-border flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400 shrink-0">
+            <div class="flex flex-wrap items-center gap-3">
+                <span class="inline-flex items-center gap-1.5"><span class="px-1 py-0.5 rounded bg-indigo-600 text-white text-[8px] font-bold leading-none">B / S</span><strong class="text-slate-200">Entry</strong> (Buy / Sell)</span>
+                <span class="inline-flex items-center gap-1.5"><span class="px-1 py-0.5 rounded bg-rose-600 text-white text-[8px] font-bold leading-none">SL</span><strong class="text-slate-200">Stop-Loss</strong></span>
+                <span class="inline-flex items-center gap-1.5"><span class="px-1 py-0.5 rounded bg-emerald-600 text-white text-[8px] font-bold leading-none">TP</span><strong class="text-slate-200">Take-Profit</strong></span>
+                <span class="inline-flex items-center gap-1.5"><span class="px-1 py-0.5 rounded bg-amber-600 text-white text-[8px] font-bold leading-none">EX</span><strong class="text-slate-200">Exit</strong></span>
+            </div>
+            <span class="text-[10px] text-slate-500">Scroll wheel to zoom • Drag to pan • Drag price/time axes to stretch • Click any trade row below to focus</span>
+        </div>
+
+        <!-- Collapsible Bottom Trade History Table -->
+        <div id="fs-bottom-drawer" class="h-44 border-t border-theme-border bg-theme-card overflow-y-auto shrink-0">
+            <div id="ps-symbol-trades-table" class="w-full"></div>
+        </div>
+    </div>
+
     <!-- Multi-Platform Account Manager & cTrader Easy Setup Modal -->
     <div id="account-manager-modal" class="hidden fixed inset-0 z-[120] flex items-center justify-center bg-black/75 backdrop-blur-sm p-2 sm:p-4" onclick="if (event.target === this) closeAccountManagerModal()">
         <div class="bg-theme-card border border-theme-border rounded-xl w-full max-w-2xl shadow-2xl flex flex-col max-h-[96vh] sm:max-h-[92vh] modal-responsive">
@@ -3254,6 +3358,12 @@
 
         let currentGraphPeriod = 'trade_by_trade';
         
+        // Provider filtering states
+        var selectedProviders = new Set(); // Set of provider IDs to display; empty means all
+        var allKnownProviders = new Map(); // id -> name
+        var currentDateFilter = 'all'; // 'all', 'today', 'yesterday', 'week', 'month', 'last30', 'custom'
+        var customDateRange = { start: null, end: null };
+
         async function loadGraph(period) {
             if (period) currentGraphPeriod = period;
             
@@ -3652,12 +3762,6 @@
             }
         }
         setInterval(updateBrokerClockDisplay, 1000);
-
-        // Provider filtering states
-        let selectedProviders = new Set(); // Set of provider IDs to display; empty means all
-        let allKnownProviders = new Map(); // id -> name
-        let currentDateFilter = 'all'; // 'all', 'today', 'yesterday', 'week', 'month', 'last30', 'custom'
-        let customDateRange = { start: null, end: null };
 
         function toggleNameFilterDropdown(e) {
             e.stopPropagation();
@@ -5157,19 +5261,47 @@
 
         function closeProviderStats() {
             psRequestSeq++;
-            destroyPsChart();
+            closeFullscreenTradeChart();
             document.getElementById('provider-stats-modal').classList.add('hidden');
             const icon = document.querySelector('#ps-refresh-btn i');
             if (icon) icon.classList.remove('fa-spin');
         }
 
+        function closeFullscreenTradeChart() {
+            destroyPsChart();
+            const fsModal = document.getElementById('fullscreen-trade-chart-modal');
+            if (fsModal) fsModal.classList.add('hidden');
+        }
+
+        function toggleFullscreenTradeDrawer() {
+            const drawer = document.getElementById('fs-bottom-drawer');
+            const txt = document.getElementById('fs-toggle-drawer-text');
+            if (!drawer) return;
+            const isHidden = drawer.classList.toggle('hidden');
+            if (txt) txt.textContent = isHidden ? 'Show List' : 'Hide List';
+            if (psChartInstance) {
+                setTimeout(() => {
+                    const container = document.getElementById('ps-lw-canvas');
+                    if (container && container.clientWidth > 0) {
+                        psChartInstance.applyOptions({ width: container.clientWidth, height: container.clientHeight || (window.innerHeight - 160) });
+                    }
+                }, 40);
+            }
+        }
+
         document.addEventListener('keydown', (e) => {
-            const m = document.getElementById('provider-stats-modal');
-            if (e.key === 'Escape' && m && !m.classList.contains('hidden')) closeProviderStats();
+            if (e.key === 'Escape') {
+                const fs = document.getElementById('fullscreen-trade-chart-modal');
+                if (fs && !fs.classList.contains('hidden')) {
+                    closeFullscreenTradeChart();
+                    return;
+                }
+                const m = document.getElementById('provider-stats-modal');
+                if (m && !m.classList.contains('hidden')) closeProviderStats();
+            }
         });
 
-        function renderProviderStats(d, scrollToChart = false) {
-            destroyPsChart();
+        function renderProviderStats(d, openChartImmediately = false) {
             psCurrentStatsData = d;
             const c = d.cards || {};
             const cov = d.coverage || {};
@@ -5177,10 +5309,6 @@
             const tzLabel = `GMT${tz >= 0 ? '+' : ''}${tz}`;
             const plat = String(d.platform || (d.sync && d.sync.platform) || '').toLowerCase();
             const isChartSupported = (plat === 'mt5' || plat === 'ctrader');
-            const platBadgeHtml = plat === 'ctrader'
-                ? '<span class="px-2 py-0.5 rounded text-[10px] font-extrabold uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">cTrader Bridge</span>'
-                : '<span class="px-2 py-0.5 rounded text-[10px] font-extrabold uppercase bg-blue-500/20 text-blue-300 border border-blue-500/30">MT5 Native</span>';
-            const platLoadingLabel = plat === 'ctrader' ? 'cTrader' : 'MT5';
             document.getElementById('ps-title').textContent = d.provider_name || 'Provider Statistics';
             let syncMsg = '';
             if (d.sync && d.sync.platform === 'ctrader') {
@@ -5231,13 +5359,13 @@
                     + psRow('Swap', psVal(c.swap_total, '$')))}
             </div>`;
 
-            // 3) Symbol statistics (with "View Chart" button for MT5 and cTrader accounts; hidden on MT4)
+            // 3) Symbol statistics (with "Open Chart" button for MT5 and cTrader accounts; hidden on MT4)
             const symHeaders = isChartSupported
                 ? ['Symbol', 'Trades', 'Lots', 'Longs Won', 'Shorts Won', 'Accuracy', 'Pips', 'Profit', 'Gain', 'Trade Chart']
                 : ['Symbol', 'Trades', 'Lots', 'Longs Won', 'Shorts Won', 'Accuracy', 'Pips', 'Profit', 'Gain'];
             const symRows = (d.by_symbol || []).map(r => {
                 const chartCol = isChartSupported
-                    ? `<td class="${psTd} text-right"><button type="button" onclick="selectPsChartSymbol('${psEsc(r.key)}', true)" class="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 font-bold text-[11px] transition-all inline-flex items-center gap-1.5"><i class="fa-solid fa-chart-line"></i> View Chart</button></td>`
+                    ? `<td class="${psTd} text-right"><button type="button" onclick="openFullscreenSymbolChart('${psEsc(r.key)}')" class="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 font-bold text-[11px] transition-all inline-flex items-center gap-1.5"><i class="fa-solid fa-expand"></i> Open Chart</button></td>`
                     : '';
                 return `<tr class="border-b border-theme-border/30">
                     <td class="${psTd} text-left text-slate-200 font-semibold">${psEsc(r.key)}</td>
@@ -5254,95 +5382,6 @@
             });
             const sym = psSection('Symbol Statistics', psTable(symHeaders, symRows));
 
-            // 3b) Interactive Trade History & Sticker Chart (MT5 & cTrader; hidden on MT4)
-            let chartSectionHtml = '';
-            if (isChartSupported && (d.by_symbol || []).length > 0) {
-                const tfs = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4'];
-                const tfBtns = tfs.map(tf =>
-                    `<button type="button" data-ps-tf="${tf}" onclick="setPsChartTimeframe('${tf}')" class="px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all border border-theme-border bg-theme-bg/60 text-slate-300 hover:text-white">${tf}</button>`
-                ).join('');
-                const symBtns = (d.by_symbol || []).map(r =>
-                    `<button type="button" data-ps-sym="${psEsc(r.key)}" onclick="selectPsChartSymbol('${psEsc(r.key)}', false)" class="px-3 py-1 rounded-lg text-xs font-bold transition-all border border-theme-border bg-theme-bg/60 text-slate-300 hover:text-white flex items-center gap-1.5"><span>${psEsc(r.key)}</span><span class="px-1.5 py-0.2 rounded text-[10px] bg-white/10 text-slate-300">${r.trades}</span></button>`
-                ).join('');
-
-                chartSectionHtml = `
-                <div id="ps-chart-section" class="bg-theme-bg/40 border border-theme-border rounded-xl p-4 space-y-3">
-                    <div class="flex flex-wrap items-center justify-between gap-2 border-b border-theme-border/60 pb-3">
-                        <div class="flex items-center gap-2">
-                            <span class="w-7 h-7 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
-                                <i class="fa-solid fa-chart-line text-xs"></i>
-                            </span>
-                            <div>
-                                <h3 class="text-sm font-bold text-white flex items-center gap-2">
-                                    Symbol Trade History &amp; Level Stickers
-                                    ${platBadgeHtml}
-                                </h3>
-                                <p class="text-[11px] text-slate-400">Interactive broker candlesticks with Entry, SL, TP &amp; Exit stickers pinned to each historical trade</p>
-                            </div>
-                        </div>
-                        <div class="flex flex-wrap items-center gap-1.5">
-                            <div class="flex items-center gap-1 bg-theme-card p-1 rounded-lg border border-theme-border">
-                                <button type="button" id="ps-mode-single-btn" onclick="setPsChartMode('single')" class="px-2.5 py-1 rounded text-[11px] font-bold bg-theme-accent text-white transition-all">Focused Trade</button>
-                                <button type="button" id="ps-mode-all-btn" onclick="setPsChartMode('all')" class="px-2.5 py-1 rounded text-[11px] font-bold text-slate-400 hover:text-white transition-all">All Trades</button>
-                            </div>
-                            <div class="flex items-center gap-1">${tfBtns}</div>
-                        </div>
-                    </div>
-
-                    <!-- Symbol Pills & Trade Stepper Bar -->
-                    <div class="flex flex-wrap items-center justify-between gap-2">
-                        <div class="flex flex-wrap items-center gap-1.5" id="ps-sym-pills">${symBtns}</div>
-                        <div class="flex flex-wrap items-center gap-1.5">
-                            <div class="flex items-center gap-1 mr-1 bg-theme-card px-1.5 py-0.5 rounded-lg border border-theme-border">
-                                <button type="button" onclick="zoomPsChart(0.65)" class="px-2 py-0.5 rounded hover:bg-theme-border text-xs font-bold text-slate-200 transition-all" title="Zoom In (+)">
-                                    <i class="fa-solid fa-magnifying-glass-plus"></i>
-                                </button>
-                                <button type="button" onclick="zoomPsChart(1.5)" class="px-2 py-0.5 rounded hover:bg-theme-border text-xs font-bold text-slate-200 transition-all" title="Zoom Out (-)">
-                                    <i class="fa-solid fa-magnifying-glass-minus"></i>
-                                </button>
-                                <button type="button" onclick="resetPsChartZoom()" class="px-2 py-0.5 rounded hover:bg-theme-border text-[11px] font-bold text-slate-300 transition-all" title="Reset Zoom to Trade">
-                                    <i class="fa-solid fa-compress mr-1"></i>Fit
-                                </button>
-                            </div>
-                            <button type="button" onclick="stepPsChartTrade(-1)" class="px-2.5 py-1 rounded-lg bg-theme-card hover:bg-theme-border text-xs font-bold text-slate-200 border border-theme-border transition-all" title="Previous Trade">
-                                <i class="fa-solid fa-chevron-left mr-1"></i>Prev
-                            </button>
-                            <span id="ps-trade-counter" class="text-xs font-mono font-bold text-slate-300 px-2">Trade 1 / 1</span>
-                            <button type="button" onclick="stepPsChartTrade(1)" class="px-2.5 py-1 rounded-lg bg-theme-card hover:bg-theme-border text-xs font-bold text-slate-200 border border-theme-border transition-all" title="Next Trade">
-                                Next<i class="fa-solid fa-chevron-right ml-1"></i>
-                            </button>
-                        </div>
-                    </div>
-
-                    <!-- Focused Trade Summary Strip -->
-                    <div id="ps-active-trade-banner" class="bg-theme-card/90 border border-theme-border rounded-lg px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs"></div>
-
-                    <!-- Candlestick Canvas + Sticker Overlay -->
-                    <div id="ps-chart-container-outer" class="relative w-full h-[420px] rounded-xl overflow-hidden border border-theme-border bg-[#131722]">
-                        <div id="ps-lw-canvas" class="w-full h-full"></div>
-                        <svg id="ps-lw-svg-layer" class="absolute inset-0 w-full h-full pointer-events-none z-[15]"></svg>
-                        <div id="ps-lw-sticker-layer" class="absolute inset-0 w-full h-full pointer-events-none overflow-hidden z-[20]"></div>
-                        <div id="ps-lw-loading" class="hidden absolute inset-0 bg-black/60 backdrop-blur-[1px] z-[30] flex items-center justify-center text-xs font-bold text-slate-200">
-                            <i class="fa-solid fa-circle-notch fa-spin mr-2 text-theme-accent text-base"></i>Loading ${platLoadingLabel} broker candles...
-                        </div>
-                    </div>
-
-                    <!-- Legend for Stickers -->
-                    <div class="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400 pt-1">
-                        <div class="flex flex-wrap items-center gap-3">
-                            <span class="inline-flex items-center gap-1.5"><span class="px-1 py-0.5 rounded bg-indigo-600 text-white text-[8px] font-bold leading-none">B / S</span><strong class="text-slate-200">Entry</strong> (Buy / Sell)</span>
-                            <span class="inline-flex items-center gap-1.5"><span class="px-1 py-0.5 rounded bg-rose-600 text-white text-[8px] font-bold leading-none">SL</span><strong class="text-slate-200">Stop-Loss</strong></span>
-                            <span class="inline-flex items-center gap-1.5"><span class="px-1 py-0.5 rounded bg-emerald-600 text-white text-[8px] font-bold leading-none">TP</span><strong class="text-slate-200">Take-Profit</strong></span>
-                            <span class="inline-flex items-center gap-1.5"><span class="px-1 py-0.5 rounded bg-amber-600 text-white text-[8px] font-bold leading-none">EX</span><strong class="text-slate-200">Exit</strong></span>
-                        </div>
-                        <span class="text-[10px] text-slate-500">Scroll to zoom • Drag to pan • Click any trade below to inspect</span>
-                    </div>
-
-                    <!-- Clickable Trade History List for Symbol -->
-                    <div id="ps-symbol-trades-table" class="max-h-52 overflow-y-auto border border-theme-border rounded-xl"></div>
-                </div>`;
-            }
-
             const hourFmt = h => `${String(h).padStart(2, '0')}:00`;
             const byHour = psSection(`Statistics by Open Time <span class="text-[10px] text-slate-500 font-normal">(hour, broker time ${tzLabel})</span>`, psBreakdown('Opening Hour', d.by_hour, hourFmt));
             const byDay = psSection('Statistics by Day of Week <span class="text-[10px] text-slate-500 font-normal">(open time)</span>', psBreakdown('Day', d.by_weekday));
@@ -5352,11 +5391,10 @@
                 Pips: Gold 0.10, Silver 0.01, JPY pairs 0.01, FX 0.0001, indices/crypto 1.0. "SL BE" = stopped within ${'±'}5 pips of entry; "SL PROFIT" = trailed stop closed in profit.
             </div>`;
 
-            document.getElementById('ps-body').innerHTML = perf + cards + sym + chartSectionHtml + byHour + byDay + byReason + note;
+            document.getElementById('ps-body').innerHTML = perf + cards + sym + byHour + byDay + byReason + note;
 
-            if (isChartSupported && (d.by_symbol || []).length > 0) {
-                const initialSym = d.by_symbol[0].key;
-                selectPsChartSymbol(initialSym, scrollToChart);
+            if (openChartImmediately && isChartSupported && (d.by_symbol || []).length > 0) {
+                openFullscreenSymbolChart(d.by_symbol[0].key);
             }
         }
 
@@ -5374,24 +5412,79 @@
             return 'H1';
         }
 
-        function selectPsChartSymbol(symbol, scrollIntoView = false) {
+        function chooseDefaultTimeframeForAll(symTrades) {
+            if (!symTrades || !symTrades.length) return 'M15';
+            if (symTrades.length === 1) return chooseDefaultTimeframe(symTrades[0]);
+            const minOpen = Math.min(...symTrades.map(t => t.open_time > 0 ? t.open_time : t.close_time));
+            const maxClose = Math.max(...symTrades.map(t => t.close_time > 0 ? t.close_time : t.open_time));
+            const span = Math.max(0, maxClose - minOpen);
+            if (span <= 7200) return 'M1';
+            if (span <= 172800) return 'M5';
+            if (span <= 1209600) return 'M15';
+            return 'H1';
+        }
+
+        function openFullscreenSymbolChart(symbol) {
+            if (!psCurrentStatsData) return;
+            const d = psCurrentStatsData;
+            const plat = String(d.platform || (d.sync && d.sync.platform) || '').toLowerCase();
+            if (plat !== 'mt5' && plat !== 'ctrader') return;
+
+            const fsModal = document.getElementById('fullscreen-trade-chart-modal');
+            if (!fsModal) return;
+            fsModal.classList.remove('hidden');
+
+            const titleEl = document.getElementById('fs-chart-title');
+            if (titleEl) titleEl.textContent = `${d.provider_name || 'Provider'} — ${symbol}`;
+
+            const badgeEl = document.getElementById('fs-chart-plat-badge');
+            if (badgeEl) {
+                badgeEl.innerHTML = plat === 'ctrader'
+                    ? '<span class="px-2 py-0.5 rounded text-[10px] font-extrabold uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">cTrader Bridge</span>'
+                    : '<span class="px-2 py-0.5 rounded text-[10px] font-extrabold uppercase bg-blue-500/20 text-blue-300 border border-blue-500/30">MT5 Native</span>';
+            }
+
+            const loadTxt = document.getElementById('ps-lw-loading-text');
+            if (loadTxt) loadTxt.textContent = `Loading ${plat === 'ctrader' ? 'cTrader' : 'MT5'} broker candles...`;
+
+            // Populate symbol switcher pills in fullscreen header
+            const pillsEl = document.getElementById('ps-sym-pills');
+            if (pillsEl) {
+                pillsEl.innerHTML = (d.by_symbol || []).map(r =>
+                    `<button type="button" data-ps-sym="${psEsc(r.key)}" onclick="selectPsChartSymbol('${psEsc(r.key)}')" class="px-2.5 py-1 rounded-lg text-xs font-bold transition-all border border-theme-border bg-theme-bg/60 text-slate-300 hover:text-white flex items-center gap-1.5"><span>${psEsc(r.key)}</span><span class="px-1.5 py-0.2 rounded text-[10px] bg-white/10 text-slate-300">${r.trades}</span></button>`
+                ).join('');
+            }
+
+            selectPsChartSymbol(symbol);
+        }
+
+        function selectPsChartSymbol(symbol) {
             if (!psCurrentStatsData) return;
             psChartState.symbol = symbol;
             const symTrades = getPsSymbolTrades(symbol);
+            psChartState.mode = 'all';
             psChartState.tradeIdx = symTrades.length > 0 ? symTrades.length - 1 : 0;
-            psChartState.timeframe = chooseDefaultTimeframe(symTrades[psChartState.tradeIdx]);
+            psChartState.timeframe = chooseDefaultTimeframeForAll(symTrades);
+
+            const titleEl = document.getElementById('fs-chart-title');
+            if (titleEl) titleEl.textContent = `${psCurrentStatsData.provider_name || 'Provider'} — ${symbol}`;
+            const subEl = document.getElementById('fs-chart-subtitle');
+            if (subEl) subEl.textContent = `${symTrades.length} historical trade(s) loaded on ${symbol}`;
+
+            const sBtn = document.getElementById('ps-mode-single-btn');
+            const aBtn = document.getElementById('ps-mode-all-btn');
+            if (sBtn && aBtn) {
+                aBtn.className = 'px-2.5 py-1 rounded text-[11px] font-bold bg-theme-accent text-white transition-all';
+                sBtn.className = 'px-2.5 py-1 rounded text-[11px] font-bold text-slate-400 hover:text-white transition-all';
+            }
 
             document.querySelectorAll('[data-ps-sym]').forEach(btn => {
                 const active = btn.getAttribute('data-ps-sym') === symbol;
                 btn.className = active
-                    ? 'px-3 py-1 rounded-lg text-xs font-bold transition-all border border-emerald-500 bg-emerald-500/20 text-emerald-300 flex items-center gap-1.5 shadow'
-                    : 'px-3 py-1 rounded-lg text-xs font-bold transition-all border border-theme-border bg-theme-bg/60 text-slate-300 hover:text-white flex items-center gap-1.5';
+                    ? 'px-2.5 py-1 rounded-lg text-xs font-bold transition-all border border-emerald-500 bg-emerald-500/20 text-emerald-300 flex items-center gap-1.5 shadow'
+                    : 'px-2.5 py-1 rounded-lg text-xs font-bold transition-all border border-theme-border bg-theme-bg/60 text-slate-300 hover:text-white flex items-center gap-1.5';
             });
 
-            if (scrollIntoView) {
-                const sec = document.getElementById('ps-chart-section');
-                if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            }
             loadAndRenderPsChart();
         }
 
@@ -5653,8 +5746,8 @@
             const minMove = Math.pow(10, -dec);
 
             psChartInstance = LightweightCharts.createChart(container, {
-                width: container.clientWidth || 800,
-                height: container.clientHeight || 420,
+                width: container.clientWidth || window.innerWidth,
+                height: container.clientHeight || Math.max(420, window.innerHeight - 240),
                 layout: {
                     background: { type: 'solid', color: '#131722' },
                     textColor: '#94a3b8',
@@ -5754,13 +5847,14 @@
 
             const renderStickers = () => {
                 if (!psChartInstance || !psCandleSeries) return;
-                const W = container.clientWidth || 800;
-                const H = container.clientHeight || 420;
+                const W = container.clientWidth || window.innerWidth;
+                const H = container.clientHeight || Math.max(420, window.innerHeight - 240);
                 const timeScale = psChartInstance.timeScale();
 
                 let stickersHtml = '';
                 let svgHtml = '';
                 const placedBoxes = [];
+                const seenStickerKeys = new Set();
 
                 function resolveStickerPos(x, y, preferAbove = false) {
                     let cy = preferAbove ? y - 15 : y + 5;
@@ -5804,7 +5898,9 @@
                     const clampX = rawX => Math.max(14, Math.min(W - 75, rawX));
 
                     // 1. ENTRY Sticker (abbreviated: B or S, no numbers, micro 8px font)
-                    if (xOpen >= -10 && xOpen <= W + 10 && yEntry >= -10 && yEntry <= H + 10) {
+                    const entryKey = `E:${openSnap}:${Math.round(yEntry)}`;
+                    if (!seenStickerKeys.has(entryKey) && xOpen >= -10 && xOpen <= W + 10 && yEntry >= -10 && yEntry <= H + 10) {
+                        seenStickerKeys.add(entryKey);
                         const isBuy = t.direction === 'BUY';
                         const badgeY = resolveStickerPos(xOpen, yEntry, !isBuy);
                         stickersHtml += `
@@ -5816,36 +5912,48 @@
 
                     // 2. SL Sticker (abbreviated: SL, no numbers, micro 8px font)
                     if (ySl !== null && xOpen >= -10 && xOpen <= W + 10 && ySl >= -10 && ySl <= H + 10) {
-                        const slAbove = ySl < yEntry;
-                        const badgeY = resolveStickerPos(xOpen, ySl, slAbove);
-                        stickersHtml += `
-                            <div style="position:absolute; left:${xOpen}px; top:${ySl}px; transform:translate(-50%,-50%);" class="w-1.5 h-1.5 rounded-full bg-rose-500 border border-white"></div>
-                            <div style="position:absolute; left:${clampX(xOpen)}px; top:${badgeY}px; transform:translateX(-50%); font-size:8px; line-height:1; padding:2px 3.5px;" class="rounded bg-rose-600/90 border border-rose-300/50 text-white font-bold shadow whitespace-nowrap">
-                                SL
-                            </div>`;
+                        const slKey = `SL:${openSnap}:${Math.round(ySl)}`;
+                        if (!seenStickerKeys.has(slKey)) {
+                            seenStickerKeys.add(slKey);
+                            const slAbove = ySl < yEntry;
+                            const badgeY = resolveStickerPos(xOpen, ySl, slAbove);
+                            stickersHtml += `
+                                <div style="position:absolute; left:${xOpen}px; top:${ySl}px; transform:translate(-50%,-50%);" class="w-1.5 h-1.5 rounded-full bg-rose-500 border border-white"></div>
+                                <div style="position:absolute; left:${clampX(xOpen)}px; top:${badgeY}px; transform:translateX(-50%); font-size:8px; line-height:1; padding:2px 3.5px;" class="rounded bg-rose-600/90 border border-rose-300/50 text-white font-bold shadow whitespace-nowrap">
+                                    SL
+                                </div>`;
+                        }
                     }
 
                     // 3. TP Sticker (abbreviated: TP, no numbers, micro 8px font)
                     if (yTp !== null && xOpen >= -10 && xOpen <= W + 10 && yTp >= -10 && yTp <= H + 10) {
-                        const tpAbove = yTp < yEntry;
-                        const badgeY = resolveStickerPos(xOpen, yTp, tpAbove);
-                        stickersHtml += `
-                            <div style="position:absolute; left:${xOpen}px; top:${yTp}px; transform:translate(-50%,-50%);" class="w-1.5 h-1.5 rounded-full bg-emerald-500 border border-white"></div>
-                            <div style="position:absolute; left:${clampX(xOpen)}px; top:${badgeY}px; transform:translateX(-50%); font-size:8px; line-height:1; padding:2px 3.5px;" class="rounded bg-emerald-600/90 border border-emerald-300/50 text-white font-bold shadow whitespace-nowrap">
-                                TP
-                            </div>`;
+                        const tpKey = `TP:${openSnap}:${Math.round(yTp)}`;
+                        if (!seenStickerKeys.has(tpKey)) {
+                            seenStickerKeys.add(tpKey);
+                            const tpAbove = yTp < yEntry;
+                            const badgeY = resolveStickerPos(xOpen, yTp, tpAbove);
+                            stickersHtml += `
+                                <div style="position:absolute; left:${xOpen}px; top:${yTp}px; transform:translate(-50%,-50%);" class="w-1.5 h-1.5 rounded-full bg-emerald-500 border border-white"></div>
+                                <div style="position:absolute; left:${clampX(xOpen)}px; top:${badgeY}px; transform:translateX(-50%); font-size:8px; line-height:1; padding:2px 3.5px;" class="rounded bg-emerald-600/90 border border-emerald-300/50 text-white font-bold shadow whitespace-nowrap">
+                                    TP
+                                </div>`;
+                        }
                     }
 
                     // 4. EXIT Sticker (abbreviated: EX, no numbers, micro 8px font)
                     if (xClose !== null && yExit !== null && xClose >= -10 && xClose <= W + 10 && yExit >= -10 && yExit <= H + 10) {
-                        const isWin = t.profit >= 0;
-                        const badgeY = resolveStickerPos(xClose, yExit, isWin);
-                        const bgCls = isWin ? 'bg-amber-500/90 border-amber-200/60 text-slate-950' : 'bg-rose-800/90 border-rose-300/50 text-white';
-                        stickersHtml += `
-                            <div style="position:absolute; left:${xClose}px; top:${yExit}px; transform:translate(-50%,-50%);" class="w-1.5 h-1.5 rounded-full ${isWin ? 'bg-amber-400' : 'bg-rose-400'} border border-white"></div>
-                            <div style="position:absolute; left:${clampX(xClose)}px; top:${badgeY}px; transform:translateX(-50%); font-size:8px; line-height:1; padding:2px 3.5px;" class="rounded ${bgCls} border font-extrabold shadow whitespace-nowrap">
-                                EX
-                            </div>`;
+                        const exKey = `EX:${closeSnap}:${Math.round(yExit)}`;
+                        if (!seenStickerKeys.has(exKey)) {
+                            seenStickerKeys.add(exKey);
+                            const isWin = t.profit >= 0;
+                            const badgeY = resolveStickerPos(xClose, yExit, isWin);
+                            const bgCls = isWin ? 'bg-amber-500/90 border-amber-200/60 text-slate-950' : 'bg-rose-800/90 border-rose-300/50 text-white';
+                            stickersHtml += `
+                                <div style="position:absolute; left:${xClose}px; top:${yExit}px; transform:translate(-50%,-50%);" class="w-1.5 h-1.5 rounded-full ${isWin ? 'bg-amber-400' : 'bg-rose-400'} border border-white"></div>
+                                <div style="position:absolute; left:${clampX(xClose)}px; top:${badgeY}px; transform:translateX(-50%); font-size:8px; line-height:1; padding:2px 3.5px;" class="rounded ${bgCls} border font-extrabold shadow whitespace-nowrap">
+                                    EX
+                                </div>`;
+                        }
                     }
                 }
 
@@ -5872,7 +5980,7 @@
             if (typeof ResizeObserver !== 'undefined') {
                 psResizeObserver = new ResizeObserver(() => {
                     if (psChartInstance && container.clientWidth > 0) {
-                        psChartInstance.applyOptions({ width: container.clientWidth, height: container.clientHeight || 420 });
+                        psChartInstance.applyOptions({ width: container.clientWidth, height: container.clientHeight || Math.max(420, window.innerHeight - 240) });
                         renderStickers();
                     }
                 });

@@ -1232,11 +1232,11 @@ def get_historical_candles(
             from_ts = to_ts - 120 * tf_sec
 
         # Add generous padding before open_time and after close_time so zooming out shows plenty of surrounding candles
-        fetch_from = max(0, int(from_ts) - 400 * tf_sec)
-        fetch_to = int(to_ts) + 250 * tf_sec
-        # Cap total span to at most 2500 bars so response is fast
-        if (fetch_to - fetch_from) // tf_sec > 2500:
-            fetch_from = fetch_to - 2500 * tf_sec
+        fetch_from = max(0, int(from_ts) - 250 * tf_sec)
+        fetch_to = int(to_ts) + 150 * tf_sec
+        # Cap total span to at most 6000 bars while preserving from_ts
+        if (fetch_to - fetch_from) // tf_sec > 6000:
+            fetch_from = max(0, min(int(from_ts) - 20 * tf_sec, fetch_to - 6000 * tf_sec))
 
         # --- cTrader Path ---
         if platform == "ctrader":
