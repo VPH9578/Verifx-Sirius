@@ -922,19 +922,49 @@ class MT4AccountWorker:
             self.save_state()
         return modified_results
 
-    def set_be_for_provider(self, provider_id: str) -> int:
+    def set_be_for_provider(self, provider_id: str = None) -> int:
         if not self.client.is_authorized:
             return 0
-        p_magic = self.magic_base + int(provider_id) if str(provider_id).isdigit() else None
+        p_magic = self.magic_base + int(provider_id) if (provider_id and str(provider_id).isdigit()) else None
         positions = self.client.get_open_positions(magic=p_magic)
         count = 0
+        state_changed = False
         for p in positions:
             sym_info = self.client.get_symbol_info(p.symbol)
-            spread = (sym_info.spread * sym_info.point) if sym_info else 0.0
-            be_sl = p.price_open + spread if p.type == 0 else p.price_open - spread
-            res = self.client.modify_position(p.ticket, sl=be_sl, tp=p.tp)
-            if res and res.get("ok"):
-                count += 1
+            digits = sym_info.digits if sym_info else 2
+            tick = self.client.get_tick(p.symbol)
+            spread = (tick.ask - tick.bid) if (tick and getattr(tick, "ask", 0) > 0 and getattr(tick, "bid", 0) > 0) else ((sym_info.spread * sym_info.point) if sym_info else 0.0)
+            be_price = round(p.price_open + spread if p.type == 0 else p.price_open - spread, digits)
+            curr_price = (tick.bid if p.type == 0 else tick.ask) if (tick and getattr(tick, "bid", 0) > 0) else getattr(p, "price_current", p.price_open)
+            is_in_profit = (p.type == 0 and curr_price > be_price) or (p.type == 1 and curr_price < be_price)
+
+            for grp in self.active_trade_groups.values():
+                grp_tkts = [grp.get("tp1_ticket"), grp.get("tp2_ticket"), grp.get("tp3_ticket")]
+                if p.ticket in grp_tkts:
+                    grp.setdefault("be_targets", {})[str(p.ticket)] = {
+                        "price": be_price,
+                        "mode": "SL" if is_in_profit else "TP",
+                    }
+                    if not is_in_profit:
+                        grp["be_recovery"] = True
+                    state_changed = True
+
+            if is_in_profit:
+                if p.sl == 0 or (p.type == 0 and be_price > p.sl) or (p.type == 1 and be_price < p.sl):
+                    res = self.client.modify_position(p.ticket, sl=be_price, tp=p.tp)
+                    if res and res.get("ok"):
+                        count += 1
+            else:
+                if (p.type == 0 and curr_price >= be_price) or (p.type == 1 and curr_price <= be_price):
+                    res = self.client.close_position(p.ticket, p.volume)
+                    if res and res.get("ok"):
+                        count += 1
+                else:
+                    res = self.client.modify_position(p.ticket, sl=p.sl, tp=be_price)
+                    if res and res.get("ok"):
+                        count += 1
+        if state_changed:
+            self.save_state()
         return count
 
     def sync_closed_trades_to_db(self, positions: list = None, pending_orders: list = None, history: list = None):
@@ -1012,7 +1042,9 @@ class MT4AccountWorker:
                 net_profit = round(float(h.get("profit") or 0.0) + float(h.get("swap") or 0.0) + float(h.get("commission") or 0.0), 2)
 
                 comm_l = comm.lower()
-                if "[tp]" in comm_l or net_profit > 0:
+                if abs(net_profit) < 0.5:
+                    close_reason = "BE"
+                elif "[tp]" in comm_l or net_profit > 0:
                     close_reason = f"TP{tier_num}"
                 elif "[sl]" in comm_l or net_profit < 0:
                     close_reason = "SL"
@@ -1203,13 +1235,44 @@ class MT4AccountWorker:
                     state_changed = True
                 continue
 
+            # Enforce any pending BE targets (underwater BE recovery via TP or stops_level fallback)
+            be_targets = grp.get("be_targets") or {}
+            symbol = grp.get("symbol", "")
+            if be_targets:
+                sym_info_be = self.client.get_symbol_info(symbol) if symbol else None
+                digits_be = sym_info_be.digits if sym_info_be else 2
+                point_be = sym_info_be.point if (sym_info_be and sym_info_be.point) else (10 ** -digits_be)
+                tick_be = self.client.get_tick(symbol) if symbol else None
+                for _tkt in [t1, t2, t3]:
+                    if not _tkt or _tkt not in positions:
+                        continue
+                    t_cfg = be_targets.get(str(_tkt))
+                    if not t_cfg:
+                        continue
+                    pos_be = positions[_tkt]
+                    be_p = round(float(t_cfg.get("price") or 0.0), digits_be)
+                    be_mode = t_cfg.get("mode", "TP")
+                    if be_p <= 0:
+                        continue
+                    curr_p = (tick_be.bid if pos_be.type == 0 else tick_be.ask) if (tick_be and getattr(tick_be, "bid", 0) > 0) else getattr(pos_be, "price_current", pos_be.price_open)
+                    if be_mode == "TP":
+                        if (pos_be.type == 0 and curr_p >= be_p) or (pos_be.type == 1 and curr_p <= be_p):
+                            self.client.close_position(pos_be.ticket, pos_be.volume)
+                        elif abs((pos_be.tp or 0.0) - be_p) > point_be * 0.5:
+                            self.client.modify_position(pos_be.ticket, sl=pos_be.sl, tp=be_p)
+                    elif be_mode == "SL":
+                        if (pos_be.type == 0 and curr_p <= be_p) or (pos_be.type == 1 and curr_p >= be_p):
+                            self.client.close_position(pos_be.ticket, pos_be.volume)
+                        elif pos_be.sl == 0 or (pos_be.type == 0 and be_p > pos_be.sl + point_be * 0.5) or (pos_be.type == 1 and be_p < pos_be.sl - point_be * 0.5):
+                            self.client.modify_position(pos_be.ticket, sl=be_p, tp=pos_be.tp)
+
             # If TP1 has closed and TP2 or TP3 are still open -> move to breakeven if configured
             settings = grp.get("settings") or self.account_config.get("provider_settings", {}).get(str(grp.get("provider_id"))) or {}
             be_rule = settings.get("sl_breakeven_at", "TP1")
             entry = grp.get("entry", 0.0)
-            symbol = grp.get("symbol", "")
+            t1_is_be_tp = str(t1) in be_targets and be_targets[str(t1)].get("mode") == "TP"
 
-            if not t1_open and t1 and not grp.get("tp1_be_done", False):
+            if not t1_open and t1 and not grp.get("tp1_be_done", False) and not t1_is_be_tp:
                 grp["tp1_be_done"] = True
                 state_changed = True
                 if be_rule == "TP1":

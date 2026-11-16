@@ -1091,7 +1091,29 @@ def manage_trailing_stops():
 
             # If at least one position filled and no TP was hit and trailing SL was not activated, it was an initial SL hit
             if group.get("tp1_hit", 0) == 0 and group.get("tp2_hit", 0) == 0 and group.get("tp3_hit", 0) == 0 and not group.get("sl_is_trailing", False):
-                group["sl_hit"] = 1
+                if group.get("be_recovery", False):
+                    # Check if legs actually closed in a loss (hit SL) vs recovered to BE
+                    hit_sl_loss = False
+                    for _tkt in [tp1_ticket, tp2_ticket, tp3_ticket]:
+                        if not _tkt:
+                            continue
+                        try:
+                            _deals = mt5.history_deals_get(position=int(_tkt)) or mt5.history_deals_get(ticket=int(_tkt))
+                            if _deals:
+                                _exits = [d for d in _deals if getattr(d, "entry", -1) in (1, 2, 3)]
+                                if _exits:
+                                    _cl = _exits[-1]
+                                    _comm = str(getattr(_cl, "comment", "") or "").lower()
+                                    _prof = float(getattr(_cl, "profit", 0.0) or 0.0)
+                                    if ("[sl" in _comm or getattr(_cl, "reason", None) in (4, 6)) and _prof < -0.5:
+                                        hit_sl_loss = True
+                                        break
+                        except Exception:
+                            pass
+                    if hit_sl_loss:
+                        group["sl_hit"] = 1
+                else:
+                    group["sl_hit"] = 1
             group["status"] = "CLOSED"
             try:
                 import db
@@ -1116,6 +1138,77 @@ def manage_trailing_stops():
             state_changed = True
             continue
             
+        # Enforce any pending BE targets (underwater BE recovery via TP or stops_level fallback)
+        be_targets = group.get("be_targets") or {}
+        if be_targets:
+            tick_be = get_tick(symbol)
+            point_be = sym_info.point if (sym_info and sym_info.point) else (10 ** -digits)
+            min_stop_be = max((sym_info.trade_stops_level if sym_info else 0) * point_be, 2 * point_be)
+            for _tkt in [tp1_ticket, tp2_ticket, tp3_ticket]:
+                if not _tkt or _tkt not in open_tickets:
+                    continue
+                t_cfg = be_targets.get(str(_tkt))
+                if not t_cfg:
+                    continue
+                pos_be = open_tickets[_tkt]
+                be_p = round(float(t_cfg.get("price") or 0.0), digits)
+                be_mode = t_cfg.get("mode", "TP")
+                if be_p <= 0:
+                    continue
+                curr_p = (tick_be.bid if pos_be.type == mt5.ORDER_TYPE_BUY else tick_be.ask) if tick_be else getattr(pos_be, "price_current", pos_be.price_open)
+                if be_mode == "TP":
+                    if (pos_be.type == mt5.ORDER_TYPE_BUY and curr_p >= be_p) or (pos_be.type == mt5.ORDER_TYPE_SELL and curr_p <= be_p):
+                        close_type = mt5.ORDER_TYPE_SELL if pos_be.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                        req_cls = {
+                            "action": mt5.TRADE_ACTION_DEAL,
+                            "symbol": symbol,
+                            "volume": pos_be.volume,
+                            "type": close_type,
+                            "price": round(curr_p, digits),
+                            "deviation": config.DEVIATION,
+                            "magic": pos_be.magic,
+                            "comment": "Sirius BE Close",
+                            "type_time": mt5.ORDER_TIME_GTC,
+                            "type_filling": mt5.ORDER_FILLING_IOC,
+                            "position": pos_be.ticket,
+                        }
+                        mt5.order_send(req_cls)
+                    elif abs((pos_be.tp or 0.0) - be_p) > point_be * 0.5:
+                        if (pos_be.type == mt5.ORDER_TYPE_BUY and be_p >= curr_p + min_stop_be) or (pos_be.type == mt5.ORDER_TYPE_SELL and be_p <= curr_p - min_stop_be):
+                            mt5.order_send({
+                                "action": mt5.TRADE_ACTION_SLTP,
+                                "position": pos_be.ticket,
+                                "symbol": symbol,
+                                "sl": pos_be.sl,
+                                "tp": be_p,
+                            })
+                elif be_mode == "SL":
+                    if (pos_be.type == mt5.ORDER_TYPE_BUY and curr_p <= be_p) or (pos_be.type == mt5.ORDER_TYPE_SELL and curr_p >= be_p):
+                        close_type = mt5.ORDER_TYPE_SELL if pos_be.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                        req_cls = {
+                            "action": mt5.TRADE_ACTION_DEAL,
+                            "symbol": symbol,
+                            "volume": pos_be.volume,
+                            "type": close_type,
+                            "price": round(curr_p, digits),
+                            "deviation": config.DEVIATION,
+                            "magic": pos_be.magic,
+                            "comment": "Sirius BE Close",
+                            "type_time": mt5.ORDER_TIME_GTC,
+                            "type_filling": mt5.ORDER_FILLING_IOC,
+                            "position": pos_be.ticket,
+                        }
+                        mt5.order_send(req_cls)
+                    elif pos_be.sl == 0 or (pos_be.type == mt5.ORDER_TYPE_BUY and be_p > pos_be.sl + point_be * 0.5) or (pos_be.type == mt5.ORDER_TYPE_SELL and be_p < pos_be.sl - point_be * 0.5):
+                        if (pos_be.type == mt5.ORDER_TYPE_BUY and be_p <= curr_p - min_stop_be) or (pos_be.type == mt5.ORDER_TYPE_SELL and be_p >= curr_p + min_stop_be):
+                            mt5.order_send({
+                                "action": mt5.TRADE_ACTION_SLTP,
+                                "position": pos_be.ticket,
+                                "symbol": symbol,
+                                "sl": be_p,
+                                "tp": pos_be.tp,
+                            })
+
         # Retrieve provider rule strategies
         prov_rules = group.get("settings") or get_provider_settings(group.get("provider_id", "1"))
         sl_tp1_strat = prov_rules.get("sl_tp1_strategy", "ENTRY")
@@ -1124,6 +1217,8 @@ def manage_trailing_stops():
 
         def _check_ticket_tp_hit(tkt):
             if not tkt:
+                return False
+            if str(tkt) in (group.get("be_targets") or {}) and group["be_targets"][str(tkt)].get("mode") == "TP":
                 return False
             orders = mt5.history_orders_get(ticket=tkt)
             pos_id = orders[0].position_id if orders else tkt
@@ -1135,6 +1230,8 @@ def manage_trailing_stops():
                 if exits:
                     cl = exits[-1]
                     comm = (cl.comment or '').lower()
+                    if 'sirius be close' in comm:
+                        return False
                     if '[tp' in comm or getattr(cl, 'reason', None) == 5:
                         return True
                     if '[sl' in comm or getattr(cl, 'reason', None) in (4, 6):
@@ -1568,7 +1665,10 @@ def get_order_type_name(mt5_type):
     return names.get(mt5_type, "Unknown")
 
 def set_breakeven_for_provider(provider_id: str = None) -> bool:
-    """Moves all open positions for this provider to true Break-Even price ($0 PnL accounting for spread)."""
+    """Moves all open positions for this provider to true Break-Even price ($0 PnL accounting for spread).
+    If a position is in profit, moves SL to BE. If a position is in the negative (underwater), moves TP to BE
+    so the trade closes automatically when price recovers to Break-Even (with a polling fallback if within stops_level).
+    """
     try:
         from account_manager import AccountManager
         AccountManager.get_instance().send_broadcast_command("SET_BE", {"provider_id": provider_id})
@@ -1586,24 +1686,79 @@ def set_breakeven_for_provider(provider_id: str = None) -> bool:
         return False
 
     success = False
+    state_changed = False
     for pos in positions:
         sym_info = get_symbol_info(pos.symbol)
         digits = sym_info.digits if sym_info else 2
+        point = sym_info.point if (sym_info and sym_info.point) else (10 ** -digits)
+        min_stop = max((sym_info.trade_stops_level if sym_info else 0) * point, 2 * point)
         entry = pos.price_open
         tick = get_tick(pos.symbol)
-        spread_val = (tick.ask - tick.bid) if tick else ((sym_info.spread * sym_info.point) if sym_info else 0.0)
-        be_price = entry + spread_val if pos.type == mt5.ORDER_TYPE_BUY else entry - spread_val
-        if pos.sl == 0 or (pos.type == mt5.ORDER_TYPE_BUY and be_price > pos.sl) or (pos.type == mt5.ORDER_TYPE_SELL and be_price < pos.sl):
-            req = {
-                "action": mt5.TRADE_ACTION_SLTP,
-                "symbol": pos.symbol,
-                "sl": round(be_price, digits),
-                "tp": pos.tp,
-                "position": pos.ticket
-            }
-            res = mt5.order_send(req)
-            if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+        spread_val = (tick.ask - tick.bid) if tick else ((sym_info.spread * point) if sym_info else 0.0)
+        be_price = round(entry + spread_val if pos.type == mt5.ORDER_TYPE_BUY else entry - spread_val, digits)
+        curr_price = (tick.bid if pos.type == mt5.ORDER_TYPE_BUY else tick.ask) if tick else getattr(pos, "price_current", entry)
+        is_in_profit = (pos.type == mt5.ORDER_TYPE_BUY and curr_price > be_price) or (pos.type == mt5.ORDER_TYPE_SELL and curr_price < be_price)
+
+        # Register BE target on any matching active trade group so manage_trailing_stops can act as fallback
+        for grp in active_trade_groups.values():
+            grp_tkts = [grp.get("tp1_ticket"), grp.get("tp2_ticket"), grp.get("tp3_ticket")]
+            if pos.ticket in grp_tkts:
+                grp.setdefault("be_targets", {})[str(pos.ticket)] = {
+                    "price": be_price,
+                    "mode": "SL" if is_in_profit else "TP",
+                }
+                if is_in_profit:
+                    grp["sl_is_trailing"] = True
+                else:
+                    grp["be_recovery"] = True
+                state_changed = True
                 success = True
+
+        if is_in_profit:
+            if pos.sl == 0 or (pos.type == mt5.ORDER_TYPE_BUY and be_price > pos.sl) or (pos.type == mt5.ORDER_TYPE_SELL and be_price < pos.sl):
+                req = {
+                    "action": mt5.TRADE_ACTION_SLTP,
+                    "symbol": pos.symbol,
+                    "sl": round(be_price, digits),
+                    "tp": pos.tp,
+                    "position": pos.ticket
+                }
+                res = mt5.order_send(req)
+                if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                    success = True
+        else:
+            # Underwater or right at BE: let the trade recover to Break-Even and close
+            if (pos.type == mt5.ORDER_TYPE_BUY and curr_price >= be_price) or (pos.type == mt5.ORDER_TYPE_SELL and curr_price <= be_price):
+                close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                req = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": pos.symbol,
+                    "volume": pos.volume,
+                    "type": close_type,
+                    "price": round(curr_price, digits),
+                    "deviation": config.DEVIATION,
+                    "magic": pos.magic,
+                    "comment": "Sirius BE Close",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": mt5.ORDER_FILLING_IOC,
+                    "position": pos.ticket,
+                }
+                res = mt5.order_send(req)
+                if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                    success = True
+            else:
+                req = {
+                    "action": mt5.TRADE_ACTION_SLTP,
+                    "symbol": pos.symbol,
+                    "sl": pos.sl,
+                    "tp": round(be_price, digits),
+                    "position": pos.ticket
+                }
+                res = mt5.order_send(req)
+                if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                    success = True
+    if state_changed:
+        save_state()
     return success
 
 def cancel_all_pending_for_provider(provider_id: str = None) -> bool:

@@ -85,8 +85,8 @@ def classify_update_message(text: str) -> dict | None:
         if new_sl > 0:
             return {"action": "MODIFY_SL", "new_sl": new_sl, "text": clean[:120]}
 
-    # 2. Explicit Break-Even command: e.g. "Set BE", "Set BE if you wish", "Move SL to BE", "SL to entry"
-    if re.search(r'\b(set\s*be|be\s+is\s+set|move\s*sl\s*to\s*be|sl\s*to\s*be|sl\s*to\s*entry|break\s*even|breakeven)\b', lower):
+    # 2. Explicit Break-Even command: e.g. "Set BE", "Set BE if you wish", "Move SL to BE", "SL to entry", "Close at BE"
+    if re.search(r'\b(set\s*be|be\s+is\s+set|move\s*sl\s*to\s*be|sl\s*(?:to|at)?\s*be|sl\s*to\s*entry|(?:move\s*)?tp\s*(?:to|at)?\s*(?:be|entry)|(?:close|exit)\s+(?:at|on)\s+(?:be|break\s*even|breakeven|entry)|break\s*even|breakeven|put(?:ting)?\s+be|be\s+now)\b', lower):
         return {"action": "SET_BE", "text": clean[:120]}
 
     # Ignore automated TP/SL hit announcements, recaps, or running pip commentary

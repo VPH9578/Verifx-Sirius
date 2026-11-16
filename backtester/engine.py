@@ -772,11 +772,18 @@ def _simulate_signal_ticks(
                             leg["profit"] = _compute_leg_profit(direction, leg["open_price"], exit_m, leg["lot"], sym_info)
                 elif u_act == "SET_BE":
                     updates_applied.append("SET_BE")
+                    curr_m = t_bid if direction == "BUY" else t_ask
+                    is_in_profit = (direction == "BUY" and curr_m > fill_price) or (direction == "SELL" and curr_m < fill_price)
                     for leg in legs:
                         if leg["status"] == "OPEN":
-                            if (direction == "BUY" and fill_price > leg["sl_price"]) or (direction == "SELL" and fill_price < leg["sl_price"]):
-                                leg["sl_price"] = fill_price
-                                leg["sl_tag"] = "BE1"
+                            if is_in_profit:
+                                if (direction == "BUY" and fill_price > leg["sl_price"]) or (direction == "SELL" and fill_price < leg["sl_price"]):
+                                    leg["sl_price"] = fill_price
+                                    leg["sl_tag"] = "BE1"
+                            else:
+                                if (direction == "BUY" and fill_price < leg["tp_price"]) or (direction == "SELL" and fill_price > leg["tp_price"]):
+                                    leg["tp_price"] = fill_price
+                                    leg["tp_tag"] = "BE1"
                 elif u_act == "MODIFY_SL" and u.get("new_sl"):
                     cand_sl = float(u["new_sl"])
                     ref_p = fill_price or initial_sl
@@ -854,10 +861,14 @@ def _simulate_signal_ticks(
                         leg["status"] = "CLOSED"
                         leg["close_price"] = leg["tp_price"]
                         leg["close_time"] = t_time_utc
-                        tp_num = leg["tp_num"]
-                        leg["close_reason"] = f"TP{tp_num}"
                         leg["profit"] = _compute_leg_profit(direction, leg["open_price"], leg["close_price"], leg["lot"], sym_info)
-                        _apply_tp_cascade(tp_num, leg["tp_price"])
+                        if leg.get("tp_tag", "").startswith("BE"):
+                            leg["close_reason"] = leg["tp_tag"]
+                            be_hit = 1
+                        else:
+                            tp_num = leg["tp_num"]
+                            leg["close_reason"] = f"TP{tp_num}"
+                            _apply_tp_cascade(tp_num, leg["tp_price"])
                 else: # SELL
                     # Check SL (ask rose into sl)
                     if t_ask >= leg["sl_price"]:
@@ -874,10 +885,14 @@ def _simulate_signal_ticks(
                         leg["status"] = "CLOSED"
                         leg["close_price"] = leg["tp_price"]
                         leg["close_time"] = t_time_utc
-                        tp_num = leg["tp_num"]
-                        leg["close_reason"] = f"TP{tp_num}"
                         leg["profit"] = _compute_leg_profit(direction, leg["open_price"], leg["close_price"], leg["lot"], sym_info)
-                        _apply_tp_cascade(tp_num, leg["tp_price"])
+                        if leg.get("tp_tag", "").startswith("BE"):
+                            leg["close_reason"] = leg["tp_tag"]
+                            be_hit = 1
+                        else:
+                            tp_num = leg["tp_num"]
+                            leg["close_reason"] = f"TP{tp_num}"
+                            _apply_tp_cascade(tp_num, leg["tp_price"])
 
             if all(l["status"] == "CLOSED" for l in legs):
                 break
@@ -935,7 +950,7 @@ def _simulate_signal_ticks(
     closed_at_utc = max((l["close_time"] for l in legs), default=sig_utc)
 
     if tp1_hit == 0 and tp2_hit == 0 and tp3_hit == 0:
-        if any(l["close_reason"] == "SL" for l in legs) or total_profit < 0:
+        if any(l["close_reason"] == "SL" for l in legs) or (not be_hit and total_profit < 0):
             sl_hit = 1
 
     realized_r = round(total_profit / risk_amount, 2) if risk_amount > 0 else (-1.0 if sl_hit else 0.0)
@@ -1325,12 +1340,16 @@ def _simulate_single_signal(
             tp_triggered = (direction == "BUY" and seg_high >= tp_p) or (direction == "SELL" and seg_low <= tp_p)
             if tp_triggered:
                 exit_p = tp_p
-                tp_num = leg["tp_num"]
                 leg["status"] = "CLOSED"
                 leg["close_price"] = exit_p
                 leg["close_time"] = bar_time_utc
-                leg["close_reason"] = f"TP{tp_num}"
                 leg["profit"] = _compute_leg_profit(direction, leg["open_price"], exit_p, leg["lot"], sym_info)
+                if leg.get("tp_tag", "").startswith("BE"):
+                    leg["close_reason"] = leg["tp_tag"]
+                    be_hit = 1
+                    continue
+                tp_num = leg["tp_num"]
+                leg["close_reason"] = f"TP{tp_num}"
 
                 if tp_num == 1:
                     tp1_hit = 1
@@ -1451,11 +1470,17 @@ def _simulate_single_signal(
                             leg["profit"] = _compute_leg_profit(direction, leg["open_price"], b_open, leg["lot"], sym_info)
                 elif u_act == "SET_BE":
                     updates_applied.append("SET_BE")
+                    is_in_profit = (direction == "BUY" and b_open > fill_price) or (direction == "SELL" and b_open < fill_price)
                     for leg in legs:
                         if leg["status"] == "OPEN":
-                            if (direction == "BUY" and fill_price > leg["sl_price"]) or (direction == "SELL" and fill_price < leg["sl_price"]):
-                                leg["sl_price"] = fill_price
-                                leg["sl_tag"] = "BE1"
+                            if is_in_profit:
+                                if (direction == "BUY" and fill_price > leg["sl_price"]) or (direction == "SELL" and fill_price < leg["sl_price"]):
+                                    leg["sl_price"] = fill_price
+                                    leg["sl_tag"] = "BE1"
+                            else:
+                                if (direction == "BUY" and fill_price < leg["tp_price"]) or (direction == "SELL" and fill_price > leg["tp_price"]):
+                                    leg["tp_price"] = fill_price
+                                    leg["tp_tag"] = "BE1"
                 elif u_act == "MODIFY_SL" and u.get("new_sl"):
                     cand_sl = float(u["new_sl"])
                     ref_p = fill_price or initial_sl
@@ -1637,7 +1662,7 @@ def _simulate_single_signal(
     # Determine sl_hit matching Sirius Copier db.py / mt5_executor.py rules:
     # SL is counted if NO TP was hit and trade closed in a loss (or at SL)
     if tp1_hit == 0 and tp2_hit == 0 and tp3_hit == 0:
-        if any(l["close_reason"] == "SL" for l in legs) or total_profit < 0:
+        if any(l["close_reason"] == "SL" for l in legs) or (not be_hit and total_profit < 0):
             sl_hit = 1
 
     realized_r = round(total_profit / risk_amount, 2) if risk_amount > 0 else (-1.0 if sl_hit else 0.0)
