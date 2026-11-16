@@ -6,6 +6,7 @@
     <title>Verifx Telegram Signal Copier</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script>
         tailwind.config = {
@@ -4396,6 +4397,7 @@
                 return providerSortAsc ? (valA > valB ? 1 : -1) : (valA < valB ? 1 : -1);
             });
 
+        const isMt5PlatformActive = (data.status && ['mt5', 'ctrader'].includes(String(data.status.active_platform || '').toLowerCase()));
             let p_html = '';
             let cards_html = '';
             for (const item of providerList) {
@@ -4406,6 +4408,9 @@
                 const isCardCopySubmenuOpen = (currentlyOpenCopySubmenuId === ('card-' + item.pId));
                 const copySubmenuHtml = buildCopySubmenuHtml(item.pId, item.providerName, false);
                 const copyCardSubmenuHtml = buildCopySubmenuHtml(item.pId, item.providerName, true);
+                const mt5ChartMenuItem = isMt5PlatformActive
+                    ? `<a href="#" onclick="openProviderStats('${item.pId}', true); return false;" class="block px-4 py-2 text-xs font-bold text-emerald-400 hover:bg-emerald-500/20 hover:text-emerald-300 transition-colors"><i class="fa-solid fa-chart-line mr-2"></i> Trade History Chart</a>`
+                    : '';
 
                 p_html += `<tr class="hover:bg-theme-bg/30 transition-colors border-b border-theme-border/30">
                     <td class="prov-col-name py-3.5 px-3 sm:px-4 text-xs ${item.isTradingEnabled ? 'text-theme-accent' : 'text-slate-400'} font-bold truncate" title="${item.providerName}">
@@ -4451,6 +4456,7 @@
                         <div id="provider-menu-${item.pId}" onclick="event.stopPropagation()" class="${isMenuOpen ? '' : 'hidden'} absolute right-2 sm:right-6 top-8 w-56 bg-theme-card border border-theme-border shadow-2xl rounded-lg py-1 z-50 text-left">
                             <a href="#" onclick="openSettings('${item.pId}'); return false;" class="block px-4 py-2 text-xs font-bold text-slate-300 hover:bg-theme-accent hover:text-white transition-colors"><i class="fa-solid fa-sliders mr-2"></i> Trade Settings</a>
                             <a href="#" onclick="openProviderStats('${item.pId}'); return false;" class="block px-4 py-2 text-xs font-bold text-slate-300 hover:bg-theme-accent hover:text-white transition-colors"><i class="fa-solid fa-chart-pie mr-2"></i> View Statistics</a>
+                            ${mt5ChartMenuItem}
                             
                             <!-- Copy to... Item -->
                             <a href="#" onclick="openCopyProviderModal('${item.pId}', '${safeProvName}', null, null, event); return false;" class="block px-4 py-2 text-xs font-bold text-slate-300 hover:bg-theme-accent hover:text-white transition-colors">
@@ -4491,6 +4497,7 @@
                             <div id="provider-menu-card-${item.pId}" onclick="event.stopPropagation()" class="${isCardMenuOpen ? '' : 'hidden'} absolute right-0 top-8 w-56 bg-theme-card border border-theme-border shadow-2xl rounded-lg py-1 z-50 text-left">
                                 <a href="#" onclick="openSettings('${item.pId}'); return false;" class="block px-4 py-2 text-xs font-bold text-slate-300 hover:bg-theme-accent hover:text-white transition-colors"><i class="fa-solid fa-sliders mr-2"></i> Trade Settings</a>
                                 <a href="#" onclick="openProviderStats('${item.pId}'); return false;" class="block px-4 py-2 text-xs font-bold text-slate-300 hover:bg-theme-accent hover:text-white transition-colors"><i class="fa-solid fa-chart-pie mr-2"></i> View Statistics</a>
+                                ${mt5ChartMenuItem}
 
                                 <!-- Copy to... Item -->
                                 <a href="#" onclick="openCopyProviderModal('${item.pId}', '${safeProvName}', null, null, event); return false;" class="block px-4 py-2 text-xs font-bold text-slate-300 hover:bg-theme-accent hover:text-white transition-colors">
@@ -5031,6 +5038,32 @@
         // --- Provider Statistics Modal Logic ---
         let currentStatsProviderId = null;
         let psRequestSeq = 0;
+        let psChartInstance = null;
+        let psCandleSeries = null;
+        let psResizeObserver = null;
+        let psCurrentStatsData = null;
+        let psChartState = {
+            symbol: null,
+            timeframe: 'M5',
+            mode: 'single', // 'single' or 'all'
+            tradeIdx: 0,
+            candles: [],
+            digits: 2,
+            pipSize: 0.1,
+            requestSeq: 0
+        };
+
+        function destroyPsChart() {
+            if (psResizeObserver) {
+                try { psResizeObserver.disconnect(); } catch (e) {}
+                psResizeObserver = null;
+            }
+            if (psChartInstance) {
+                try { psChartInstance.remove(); } catch (e) {}
+                psChartInstance = null;
+                psCandleSeries = null;
+            }
+        }
 
         function psEsc(s) {
             return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -5089,7 +5122,7 @@
             return psTable(headers, body);
         }
 
-        async function openProviderStats(id) {
+        async function openProviderStats(id, scrollToChart = false) {
             if (!id) return;
             currentStatsProviderId = id;
             const seq = ++psRequestSeq;
@@ -5099,6 +5132,7 @@
             const icon = document.querySelector('#ps-refresh-btn i');
             if (icon) icon.classList.add('fa-spin');
             if (!body.dataset.pid || body.dataset.pid !== String(id)) {
+                destroyPsChart();
                 document.getElementById('ps-title').textContent = 'Provider Statistics';
                 document.getElementById('ps-subtitle').textContent = '';
                 body.innerHTML = `<div class="py-16 text-center text-slate-400 text-sm"><i class="fa-solid fa-circle-notch fa-spin mr-2 text-theme-accent"></i>Syncing trade history & crunching numbers...<div class="text-[11px] text-slate-500 mt-2">The first load can take a few seconds while performance data is processed.</div></div>`;
@@ -5110,7 +5144,7 @@
                 if (seq !== psRequestSeq) return; // a newer request superseded this one
                 if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
                 body.dataset.pid = String(id);
-                renderProviderStats(data);
+                renderProviderStats(data, scrollToChart);
             } catch (err) {
                 if (seq !== psRequestSeq) return;
                 console.error('Failed to load provider statistics', err);
@@ -5123,6 +5157,7 @@
 
         function closeProviderStats() {
             psRequestSeq++;
+            destroyPsChart();
             document.getElementById('provider-stats-modal').classList.add('hidden');
             const icon = document.querySelector('#ps-refresh-btn i');
             if (icon) icon.classList.remove('fa-spin');
@@ -5133,11 +5168,19 @@
             if (e.key === 'Escape' && m && !m.classList.contains('hidden')) closeProviderStats();
         });
 
-        function renderProviderStats(d) {
+        function renderProviderStats(d, scrollToChart = false) {
+            destroyPsChart();
+            psCurrentStatsData = d;
             const c = d.cards || {};
             const cov = d.coverage || {};
             const tz = d.broker_utc_offset_hours;
             const tzLabel = `GMT${tz >= 0 ? '+' : ''}${tz}`;
+            const plat = String(d.platform || (d.sync && d.sync.platform) || '').toLowerCase();
+            const isChartSupported = (plat === 'mt5' || plat === 'ctrader');
+            const platBadgeHtml = plat === 'ctrader'
+                ? '<span class="px-2 py-0.5 rounded text-[10px] font-extrabold uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">cTrader Bridge</span>'
+                : '<span class="px-2 py-0.5 rounded text-[10px] font-extrabold uppercase bg-blue-500/20 text-blue-300 border border-blue-500/30">MT5 Native</span>';
+            const platLoadingLabel = plat === 'ctrader' ? 'cTrader' : 'MT5';
             document.getElementById('ps-title').textContent = d.provider_name || 'Provider Statistics';
             let syncMsg = '';
             if (d.sync && d.sync.platform === 'ctrader') {
@@ -5188,19 +5231,117 @@
                     + psRow('Swap', psVal(c.swap_total, '$')))}
             </div>`;
 
-            // 3) Symbol statistics
-            const symRows = (d.by_symbol || []).map(r => `<tr class="border-b border-theme-border/30">
-                <td class="${psTd} text-left text-slate-200 font-semibold">${psEsc(r.key)}</td>
-                <td class="${psTd} text-right text-slate-300">${r.trades}</td>
-                <td class="${psTd} text-right text-slate-300">${psNum(r.lots)}</td>
-                <td class="${psTd} text-right text-theme-green font-bold">${r.longs_won}</td>
-                <td class="${psTd} text-right text-theme-green font-bold">${r.shorts_won}</td>
-                <td class="${psTd} text-right">${psVal(r.accuracy, '%', 2, false).replace('text-slate-300', r.accuracy >= 50 ? 'text-theme-green' : 'text-theme-blue')}</td>
-                <td class="${psTd} text-right">${psVal(r.pips)}</td>
-                <td class="${psTd} text-right">${psVal(r.profit, '$')}</td>
-                <td class="${psTd} text-right">${psVal(r.gain, '%')}</td>
-            </tr>`);
-            const sym = psSection('Symbol Statistics', psTable(['Symbol', 'Trades', 'Lots', 'Longs Won', 'Shorts Won', 'Accuracy', 'Pips', 'Profit', 'Gain'], symRows));
+            // 3) Symbol statistics (with "View Chart" button for MT5 and cTrader accounts; hidden on MT4)
+            const symHeaders = isChartSupported
+                ? ['Symbol', 'Trades', 'Lots', 'Longs Won', 'Shorts Won', 'Accuracy', 'Pips', 'Profit', 'Gain', 'Trade Chart']
+                : ['Symbol', 'Trades', 'Lots', 'Longs Won', 'Shorts Won', 'Accuracy', 'Pips', 'Profit', 'Gain'];
+            const symRows = (d.by_symbol || []).map(r => {
+                const chartCol = isChartSupported
+                    ? `<td class="${psTd} text-right"><button type="button" onclick="selectPsChartSymbol('${psEsc(r.key)}', true)" class="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 font-bold text-[11px] transition-all inline-flex items-center gap-1.5"><i class="fa-solid fa-chart-line"></i> View Chart</button></td>`
+                    : '';
+                return `<tr class="border-b border-theme-border/30">
+                    <td class="${psTd} text-left text-slate-200 font-semibold">${psEsc(r.key)}</td>
+                    <td class="${psTd} text-right text-slate-300">${r.trades}</td>
+                    <td class="${psTd} text-right text-slate-300">${psNum(r.lots)}</td>
+                    <td class="${psTd} text-right text-theme-green font-bold">${r.longs_won}</td>
+                    <td class="${psTd} text-right text-theme-green font-bold">${r.shorts_won}</td>
+                    <td class="${psTd} text-right">${psVal(r.accuracy, '%', 2, false).replace('text-slate-300', r.accuracy >= 50 ? 'text-theme-green' : 'text-theme-blue')}</td>
+                    <td class="${psTd} text-right">${psVal(r.pips)}</td>
+                    <td class="${psTd} text-right">${psVal(r.profit, '$')}</td>
+                    <td class="${psTd} text-right">${psVal(r.gain, '%')}</td>
+                    ${chartCol}
+                </tr>`;
+            });
+            const sym = psSection('Symbol Statistics', psTable(symHeaders, symRows));
+
+            // 3b) Interactive Trade History & Sticker Chart (MT5 & cTrader; hidden on MT4)
+            let chartSectionHtml = '';
+            if (isChartSupported && (d.by_symbol || []).length > 0) {
+                const tfs = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4'];
+                const tfBtns = tfs.map(tf =>
+                    `<button type="button" data-ps-tf="${tf}" onclick="setPsChartTimeframe('${tf}')" class="px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all border border-theme-border bg-theme-bg/60 text-slate-300 hover:text-white">${tf}</button>`
+                ).join('');
+                const symBtns = (d.by_symbol || []).map(r =>
+                    `<button type="button" data-ps-sym="${psEsc(r.key)}" onclick="selectPsChartSymbol('${psEsc(r.key)}', false)" class="px-3 py-1 rounded-lg text-xs font-bold transition-all border border-theme-border bg-theme-bg/60 text-slate-300 hover:text-white flex items-center gap-1.5"><span>${psEsc(r.key)}</span><span class="px-1.5 py-0.2 rounded text-[10px] bg-white/10 text-slate-300">${r.trades}</span></button>`
+                ).join('');
+
+                chartSectionHtml = `
+                <div id="ps-chart-section" class="bg-theme-bg/40 border border-theme-border rounded-xl p-4 space-y-3">
+                    <div class="flex flex-wrap items-center justify-between gap-2 border-b border-theme-border/60 pb-3">
+                        <div class="flex items-center gap-2">
+                            <span class="w-7 h-7 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
+                                <i class="fa-solid fa-chart-line text-xs"></i>
+                            </span>
+                            <div>
+                                <h3 class="text-sm font-bold text-white flex items-center gap-2">
+                                    Symbol Trade History &amp; Level Stickers
+                                    ${platBadgeHtml}
+                                </h3>
+                                <p class="text-[11px] text-slate-400">Interactive broker candlesticks with Entry, SL, TP &amp; Exit stickers pinned to each historical trade</p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-1.5">
+                            <div class="flex items-center gap-1 bg-theme-card p-1 rounded-lg border border-theme-border">
+                                <button type="button" id="ps-mode-single-btn" onclick="setPsChartMode('single')" class="px-2.5 py-1 rounded text-[11px] font-bold bg-theme-accent text-white transition-all">Focused Trade</button>
+                                <button type="button" id="ps-mode-all-btn" onclick="setPsChartMode('all')" class="px-2.5 py-1 rounded text-[11px] font-bold text-slate-400 hover:text-white transition-all">All Trades</button>
+                            </div>
+                            <div class="flex items-center gap-1">${tfBtns}</div>
+                        </div>
+                    </div>
+
+                    <!-- Symbol Pills & Trade Stepper Bar -->
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                        <div class="flex flex-wrap items-center gap-1.5" id="ps-sym-pills">${symBtns}</div>
+                        <div class="flex flex-wrap items-center gap-1.5">
+                            <div class="flex items-center gap-1 mr-1 bg-theme-card px-1.5 py-0.5 rounded-lg border border-theme-border">
+                                <button type="button" onclick="zoomPsChart(0.65)" class="px-2 py-0.5 rounded hover:bg-theme-border text-xs font-bold text-slate-200 transition-all" title="Zoom In (+)">
+                                    <i class="fa-solid fa-magnifying-glass-plus"></i>
+                                </button>
+                                <button type="button" onclick="zoomPsChart(1.5)" class="px-2 py-0.5 rounded hover:bg-theme-border text-xs font-bold text-slate-200 transition-all" title="Zoom Out (-)">
+                                    <i class="fa-solid fa-magnifying-glass-minus"></i>
+                                </button>
+                                <button type="button" onclick="resetPsChartZoom()" class="px-2 py-0.5 rounded hover:bg-theme-border text-[11px] font-bold text-slate-300 transition-all" title="Reset Zoom to Trade">
+                                    <i class="fa-solid fa-compress mr-1"></i>Fit
+                                </button>
+                            </div>
+                            <button type="button" onclick="stepPsChartTrade(-1)" class="px-2.5 py-1 rounded-lg bg-theme-card hover:bg-theme-border text-xs font-bold text-slate-200 border border-theme-border transition-all" title="Previous Trade">
+                                <i class="fa-solid fa-chevron-left mr-1"></i>Prev
+                            </button>
+                            <span id="ps-trade-counter" class="text-xs font-mono font-bold text-slate-300 px-2">Trade 1 / 1</span>
+                            <button type="button" onclick="stepPsChartTrade(1)" class="px-2.5 py-1 rounded-lg bg-theme-card hover:bg-theme-border text-xs font-bold text-slate-200 border border-theme-border transition-all" title="Next Trade">
+                                Next<i class="fa-solid fa-chevron-right ml-1"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Focused Trade Summary Strip -->
+                    <div id="ps-active-trade-banner" class="bg-theme-card/90 border border-theme-border rounded-lg px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs"></div>
+
+                    <!-- Candlestick Canvas + Sticker Overlay -->
+                    <div id="ps-chart-container-outer" class="relative w-full h-[420px] rounded-xl overflow-hidden border border-theme-border bg-[#131722]">
+                        <div id="ps-lw-canvas" class="w-full h-full"></div>
+                        <svg id="ps-lw-svg-layer" class="absolute inset-0 w-full h-full pointer-events-none z-[15]"></svg>
+                        <div id="ps-lw-sticker-layer" class="absolute inset-0 w-full h-full pointer-events-none overflow-hidden z-[20]"></div>
+                        <div id="ps-lw-loading" class="hidden absolute inset-0 bg-black/60 backdrop-blur-[1px] z-[30] flex items-center justify-center text-xs font-bold text-slate-200">
+                            <i class="fa-solid fa-circle-notch fa-spin mr-2 text-theme-accent text-base"></i>Loading ${platLoadingLabel} broker candles...
+                        </div>
+                    </div>
+
+                    <!-- Legend for Stickers -->
+                    <div class="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400 pt-1">
+                        <div class="flex flex-wrap items-center gap-3">
+                            <span class="inline-flex items-center gap-1.5"><span class="px-1 py-0.5 rounded bg-indigo-600 text-white text-[8px] font-bold leading-none">B / S</span><strong class="text-slate-200">Entry</strong> (Buy / Sell)</span>
+                            <span class="inline-flex items-center gap-1.5"><span class="px-1 py-0.5 rounded bg-rose-600 text-white text-[8px] font-bold leading-none">SL</span><strong class="text-slate-200">Stop-Loss</strong></span>
+                            <span class="inline-flex items-center gap-1.5"><span class="px-1 py-0.5 rounded bg-emerald-600 text-white text-[8px] font-bold leading-none">TP</span><strong class="text-slate-200">Take-Profit</strong></span>
+                            <span class="inline-flex items-center gap-1.5"><span class="px-1 py-0.5 rounded bg-amber-600 text-white text-[8px] font-bold leading-none">EX</span><strong class="text-slate-200">Exit</strong></span>
+                        </div>
+                        <span class="text-[10px] text-slate-500">Scroll to zoom • Drag to pan • Click any trade below to inspect</span>
+                    </div>
+
+                    <!-- Clickable Trade History List for Symbol -->
+                    <div id="ps-symbol-trades-table" class="max-h-52 overflow-y-auto border border-theme-border rounded-xl"></div>
+                </div>`;
+            }
 
             const hourFmt = h => `${String(h).padStart(2, '0')}:00`;
             const byHour = psSection(`Statistics by Open Time <span class="text-[10px] text-slate-500 font-normal">(hour, broker time ${tzLabel})</span>`, psBreakdown('Opening Hour', d.by_hour, hourFmt));
@@ -5211,7 +5352,537 @@
                 Pips: Gold 0.10, Silver 0.01, JPY pairs 0.01, FX 0.0001, indices/crypto 1.0. "SL BE" = stopped within ${'±'}5 pips of entry; "SL PROFIT" = trailed stop closed in profit.
             </div>`;
 
-            document.getElementById('ps-body').innerHTML = perf + cards + sym + byHour + byDay + byReason + note;
+            document.getElementById('ps-body').innerHTML = perf + cards + sym + chartSectionHtml + byHour + byDay + byReason + note;
+
+            if (isChartSupported && (d.by_symbol || []).length > 0) {
+                const initialSym = d.by_symbol[0].key;
+                selectPsChartSymbol(initialSym, scrollToChart);
+            }
+        }
+
+        function getPsSymbolTrades(symbol) {
+            if (!psCurrentStatsData || !Array.isArray(psCurrentStatsData.trades)) return [];
+            return psCurrentStatsData.trades.filter(t => t.symbol === symbol && (t.open_time > 0 || t.close_time > 0));
+        }
+
+        function chooseDefaultTimeframe(trade) {
+            if (!trade) return 'M15';
+            const dur = Math.max(0, (trade.close_time || 0) - (trade.open_time || 0));
+            if (dur <= 1800) return 'M1';
+            if (dur <= 14400) return 'M5';
+            if (dur <= 86400) return 'M15';
+            return 'H1';
+        }
+
+        function selectPsChartSymbol(symbol, scrollIntoView = false) {
+            if (!psCurrentStatsData) return;
+            psChartState.symbol = symbol;
+            const symTrades = getPsSymbolTrades(symbol);
+            psChartState.tradeIdx = symTrades.length > 0 ? symTrades.length - 1 : 0;
+            psChartState.timeframe = chooseDefaultTimeframe(symTrades[psChartState.tradeIdx]);
+
+            document.querySelectorAll('[data-ps-sym]').forEach(btn => {
+                const active = btn.getAttribute('data-ps-sym') === symbol;
+                btn.className = active
+                    ? 'px-3 py-1 rounded-lg text-xs font-bold transition-all border border-emerald-500 bg-emerald-500/20 text-emerald-300 flex items-center gap-1.5 shadow'
+                    : 'px-3 py-1 rounded-lg text-xs font-bold transition-all border border-theme-border bg-theme-bg/60 text-slate-300 hover:text-white flex items-center gap-1.5';
+            });
+
+            if (scrollIntoView) {
+                const sec = document.getElementById('ps-chart-section');
+                if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+            loadAndRenderPsChart();
+        }
+
+        function setPsChartTimeframe(tf) {
+            psChartState.timeframe = tf;
+            loadAndRenderPsChart();
+        }
+
+        function setPsChartMode(mode) {
+            psChartState.mode = mode;
+            const sBtn = document.getElementById('ps-mode-single-btn');
+            const aBtn = document.getElementById('ps-mode-all-btn');
+            if (sBtn && aBtn) {
+                if (mode === 'single') {
+                    sBtn.className = 'px-2.5 py-1 rounded text-[11px] font-bold bg-theme-accent text-white transition-all';
+                    aBtn.className = 'px-2.5 py-1 rounded text-[11px] font-bold text-slate-400 hover:text-white transition-all';
+                } else {
+                    aBtn.className = 'px-2.5 py-1 rounded text-[11px] font-bold bg-theme-accent text-white transition-all';
+                    sBtn.className = 'px-2.5 py-1 rounded text-[11px] font-bold text-slate-400 hover:text-white transition-all';
+                }
+            }
+            loadAndRenderPsChart();
+        }
+
+        function stepPsChartTrade(delta) {
+            const symTrades = getPsSymbolTrades(psChartState.symbol);
+            if (!symTrades.length) return;
+            psChartState.mode = 'single';
+            const sBtn = document.getElementById('ps-mode-single-btn');
+            const aBtn = document.getElementById('ps-mode-all-btn');
+            if (sBtn && aBtn) {
+                sBtn.className = 'px-2.5 py-1 rounded text-[11px] font-bold bg-theme-accent text-white transition-all';
+                aBtn.className = 'px-2.5 py-1 rounded text-[11px] font-bold text-slate-400 hover:text-white transition-all';
+            }
+            psChartState.tradeIdx = (psChartState.tradeIdx + delta + symTrades.length) % symTrades.length;
+            psChartState.timeframe = chooseDefaultTimeframe(symTrades[psChartState.tradeIdx]);
+            loadAndRenderPsChart();
+        }
+
+        function focusPsChartTrade(idx) {
+            const symTrades = getPsSymbolTrades(psChartState.symbol);
+            if (idx < 0 || idx >= symTrades.length) return;
+            psChartState.mode = 'single';
+            psChartState.tradeIdx = idx;
+            psChartState.timeframe = chooseDefaultTimeframe(symTrades[idx]);
+            const sBtn = document.getElementById('ps-mode-single-btn');
+            const aBtn = document.getElementById('ps-mode-all-btn');
+            if (sBtn && aBtn) {
+                sBtn.className = 'px-2.5 py-1 rounded text-[11px] font-bold bg-theme-accent text-white transition-all';
+                aBtn.className = 'px-2.5 py-1 rounded text-[11px] font-bold text-slate-400 hover:text-white transition-all';
+            }
+            loadAndRenderPsChart();
+        }
+
+        function updatePsChartUiControls(symTrades) {
+            document.querySelectorAll('[data-ps-tf]').forEach(btn => {
+                const active = btn.getAttribute('data-ps-tf') === psChartState.timeframe;
+                btn.className = active
+                    ? 'px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all border border-theme-accent bg-theme-accent/25 text-white shadow'
+                    : 'px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all border border-theme-border bg-theme-bg/60 text-slate-300 hover:text-white';
+            });
+
+            const counterEl = document.getElementById('ps-trade-counter');
+            if (counterEl) {
+                counterEl.textContent = symTrades.length
+                    ? `Trade ${psChartState.tradeIdx + 1} / ${symTrades.length}`
+                    : '0 Trades';
+            }
+
+            const bannerEl = document.getElementById('ps-active-trade-banner');
+            const t = symTrades[psChartState.tradeIdx];
+            if (bannerEl) {
+                if (!t) {
+                    bannerEl.innerHTML = `<span class="text-slate-400 italic">No historical trades found for ${psEsc(psChartState.symbol)}</span>`;
+                } else {
+                    const isBuy = t.direction === 'BUY';
+                    const dec = psChartState.digits || (t.open_price < 20 ? 5 : 2);
+                    const fmtP = v => (v && v > 0) ? Number(v).toFixed(dec) : '—';
+                    const pCol = t.profit >= 0 ? 'text-emerald-400' : 'text-rose-400';
+                    const pSign = t.profit >= 0 ? '+' : '';
+                    bannerEl.innerHTML = `
+                        <div class="flex flex-wrap items-center gap-2">
+                            <span class="px-2 py-0.5 rounded font-extrabold text-[11px] uppercase ${isBuy ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'}">
+                                ${isBuy ? '▲ BUY' : '▼ SELL'} ${psEsc(t.symbol)}
+                            </span>
+                            <span class="font-mono text-slate-400 text-[11px]">#${t.position_id}</span>
+                            <span class="text-slate-400 text-[11px]">• ${psEsc(t.open_time_str || '')} → ${psEsc(t.close_time_str || '')} (${psEsc(t.duration || '0s')})</span>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-3 font-mono text-[11px]">
+                            <span class="px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-200 border border-indigo-500/40"><strong>ENTRY:</strong> ${fmtP(t.open_price)}</span>
+                            <span class="px-2 py-0.5 rounded bg-rose-500/20 text-rose-200 border border-rose-500/40"><strong>SL:</strong> ${fmtP(t.sl)}</span>
+                            <span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-200 border border-emerald-500/40"><strong>TP:</strong> ${fmtP(t.tp)}</span>
+                            <span class="px-2 py-0.5 rounded bg-amber-500/20 text-amber-200 border border-amber-500/40"><strong>EXIT (${psEsc(t.close_reason)}):</strong> ${fmtP(t.close_price)}</span>
+                            <span class="font-bold ${pCol}">${pSign}$${psNum(t.profit)} (${pSign}${psNum(t.pips, 1)} pips)</span>
+                        </div>`;
+                }
+            }
+
+            // Render clickable trade list table below chart
+            const listEl = document.getElementById('ps-symbol-trades-table');
+            if (listEl) {
+                const dec = psChartState.digits || 2;
+                const fmtP = v => (v && v > 0) ? Number(v).toFixed(dec) : '—';
+                const rowsHtml = symTrades.map((tr, idx) => {
+                    const isSelected = (psChartState.mode === 'single' && idx === psChartState.tradeIdx);
+                    const isBuy = tr.direction === 'BUY';
+                    const pCol = tr.profit >= 0 ? 'text-theme-green' : 'text-theme-blue';
+                    const pSign = tr.profit >= 0 ? '+' : '';
+                    return `<tr onclick="focusPsChartTrade(${idx})" class="cursor-pointer border-b border-theme-border/30 transition-colors ${isSelected ? 'bg-theme-accent/20' : 'hover:bg-white/5'}">
+                        <td class="py-2 px-3 text-[11px] font-mono text-slate-300">${idx + 1}. #${tr.position_id}</td>
+                        <td class="py-2 px-3 text-[11px] font-bold ${isBuy ? 'text-emerald-400' : 'text-rose-400'}">${tr.direction}</td>
+                        <td class="py-2 px-3 text-[11px] font-mono text-slate-300">${psEsc(tr.open_time_str || '—')}</td>
+                        <td class="py-2 px-3 text-[11px] font-mono text-indigo-300 text-right">${fmtP(tr.open_price)}</td>
+                        <td class="py-2 px-3 text-[11px] font-mono text-rose-300 text-right">${fmtP(tr.sl)}</td>
+                        <td class="py-2 px-3 text-[11px] font-mono text-emerald-300 text-right">${fmtP(tr.tp)}</td>
+                        <td class="py-2 px-3 text-[11px] font-mono text-amber-200 text-right">${fmtP(tr.close_price)}</td>
+                        <td class="py-2 px-3 text-[11px] font-bold text-right"><span class="px-1.5 py-0.5 rounded text-[10px] bg-white/10 text-slate-200">${psEsc(tr.close_reason)}</span></td>
+                        <td class="py-2 px-3 text-[11px] font-mono font-bold ${pCol} text-right">${pSign}$${psNum(tr.profit)} (${pSign}${psNum(tr.pips, 1)}p)</td>
+                    </tr>`;
+                }).join('');
+                listEl.innerHTML = `<table class="w-full text-left"><thead class="bg-theme-bg/80 border-b border-theme-border sticky top-0 z-10"><tr>
+                    <th class="${psTh} text-left">Trade</th>
+                    <th class="${psTh} text-left">Side</th>
+                    <th class="${psTh} text-left">Open Time</th>
+                    <th class="${psTh} text-right">Entry</th>
+                    <th class="${psTh} text-right">SL</th>
+                    <th class="${psTh} text-right">TP</th>
+                    <th class="${psTh} text-right">Exit</th>
+                    <th class="${psTh} text-right">Outcome</th>
+                    <th class="${psTh} text-right">Profit / Pips</th>
+                </tr></thead><tbody>${rowsHtml}</tbody></table>`;
+            }
+        }
+
+        async function loadAndRenderPsChart() {
+            const sym = psChartState.symbol;
+            if (!sym || !psCurrentStatsData) return;
+            const symTrades = getPsSymbolTrades(sym);
+            updatePsChartUiControls(symTrades);
+            if (!symTrades.length) return;
+
+            const reqSeq = ++psChartState.requestSeq;
+            const loadingEl = document.getElementById('ps-lw-loading');
+            if (loadingEl) loadingEl.classList.remove('hidden');
+
+            let fromTs = 0;
+            let toTs = 0;
+            if (psChartState.mode === 'single') {
+                const t = symTrades[psChartState.tradeIdx] || symTrades[symTrades.length - 1];
+                fromTs = t.open_time > 0 ? t.open_time : t.close_time;
+                toTs = t.close_time > 0 ? t.close_time : t.open_time;
+            } else {
+                fromTs = Math.min(...symTrades.map(t => t.open_time > 0 ? t.open_time : t.close_time));
+                toTs = Math.max(...symTrades.map(t => t.close_time > 0 ? t.close_time : t.open_time));
+            }
+
+            try {
+                const accId = psCurrentStatsData.account_id || window.currentActiveAccountId || '';
+                const pid = psCurrentStatsData.provider_id || currentStatsProviderId || '';
+                const qs = new URLSearchParams({
+                    symbol: sym,
+                    timeframe: psChartState.timeframe,
+                    from_ts: String(fromTs),
+                    to_ts: String(toTs),
+                    account_id: accId,
+                    provider_id: pid
+                });
+                const res = await fetch(`/api/candles?${qs.toString()}`);
+                const data = await res.json();
+                if (reqSeq !== psChartState.requestSeq) return;
+                psChartState.candles = Array.isArray(data.candles) ? data.candles : [];
+                psChartState.digits = Number(data.digits || 2);
+                psChartState.pipSize = Number(data.pip_size || 0.1);
+                updatePsChartUiControls(symTrades);
+                mountPsLightweightChart(symTrades);
+            } catch (err) {
+                console.error('Failed to load MT5 candles for chart:', err);
+            } finally {
+                if (reqSeq === psChartState.requestSeq && loadingEl) {
+                    loadingEl.classList.add('hidden');
+                }
+            }
+        }
+
+        function snapTimestampToCandle(rawTs, candles) {
+            if (!candles || !candles.length || !rawTs) return null;
+            let best = candles[0].time;
+            for (let i = 0; i < candles.length; i++) {
+                const ct = candles[i].time;
+                if (ct <= rawTs) {
+                    best = ct;
+                } else {
+                    break;
+                }
+            }
+            return best;
+        }
+
+        function zoomPsChart(scaleFactor) {
+            if (!psChartInstance) return;
+            const ts = psChartInstance.timeScale();
+            const range = ts.getVisibleLogicalRange();
+            if (!range) return;
+            const center = (range.from + range.to) / 2;
+            const halfSpan = Math.max(4, ((range.to - range.from) / 2) * scaleFactor);
+            ts.setVisibleLogicalRange({
+                from: center - halfSpan,
+                to: center + halfSpan,
+            });
+        }
+
+        function resetPsChartZoom() {
+            if (!psChartInstance || !psCandleSeries) return;
+            const symTrades = getPsSymbolTrades(psChartState.symbol);
+            const activeTrades = psChartState.mode === 'single'
+                ? [symTrades[psChartState.tradeIdx] || symTrades[symTrades.length - 1]].filter(Boolean)
+                : symTrades;
+            const candles = psChartState.candles || [];
+            psChartInstance.priceScale('right').applyOptions({ autoScale: true });
+            if (activeTrades.length > 0 && candles.length > 0) {
+                const minOpen = Math.min(...activeTrades.map(t => t.open_time > 0 ? t.open_time : t.close_time));
+                const maxClose = Math.max(...activeTrades.map(t => t.close_time > 0 ? t.close_time : t.open_time));
+                const startSnap = snapTimestampToCandle(minOpen, candles);
+                const endSnap = snapTimestampToCandle(maxClose, candles);
+                const startIdx = Math.max(0, candles.findIndex(c => c.time === startSnap) - 18);
+                const endIdx = Math.min(candles.length - 1, Math.max(startIdx + 25, candles.findIndex(c => c.time === endSnap) + 12));
+                if (candles[startIdx] && candles[endIdx]) {
+                    try {
+                        psChartInstance.timeScale().setVisibleRange({
+                            from: candles[startIdx].time,
+                            to: candles[endIdx].time,
+                        });
+                        return;
+                    } catch (e) {}
+                }
+            }
+            psChartInstance.timeScale().fitContent();
+        }
+
+        function mountPsLightweightChart(symTrades) {
+            destroyPsChart();
+            const container = document.getElementById('ps-lw-canvas');
+            const stickerLayer = document.getElementById('ps-lw-sticker-layer');
+            const svgLayer = document.getElementById('ps-lw-svg-layer');
+            if (!container || !stickerLayer || typeof LightweightCharts === 'undefined') return;
+
+            const candles = psChartState.candles || [];
+            if (!candles.length) {
+                stickerLayer.innerHTML = `<div class="w-full h-full flex items-center justify-center text-xs text-slate-400">No historical MT5 candle bars returned for ${psEsc(psChartState.symbol)} (${psChartState.timeframe}).</div>`;
+                if (svgLayer) svgLayer.innerHTML = '';
+                return;
+            }
+
+            const activeTrades = psChartState.mode === 'single'
+                ? [symTrades[psChartState.tradeIdx] || symTrades[symTrades.length - 1]].filter(Boolean)
+                : symTrades;
+
+            const dec = psChartState.digits || 2;
+            const minMove = Math.pow(10, -dec);
+
+            psChartInstance = LightweightCharts.createChart(container, {
+                width: container.clientWidth || 800,
+                height: container.clientHeight || 420,
+                layout: {
+                    background: { type: 'solid', color: '#131722' },
+                    textColor: '#94a3b8',
+                    fontSize: 11,
+                },
+                grid: {
+                    vertLines: { color: 'rgba(58, 60, 79, 0.35)' },
+                    horzLines: { color: 'rgba(58, 60, 79, 0.35)' },
+                },
+                crosshair: {
+                    mode: LightweightCharts.CrosshairMode.Normal,
+                },
+                handleScroll: {
+                    mouseWheel: true,
+                    pressedMouseMove: true,
+                    horzTouchDrag: true,
+                    vertTouchDrag: true,
+                },
+                handleScale: {
+                    axisPressedMouseMove: { time: true, price: true },
+                    axisDoubleClickReset: { time: true, price: true },
+                    mouseWheel: true,
+                    pinch: true,
+                },
+                rightPriceScale: {
+                    borderColor: '#3a3c4f',
+                    scaleMargins: { top: 0.14, bottom: 0.14 },
+                },
+                timeScale: {
+                    borderColor: '#3a3c4f',
+                    timeVisible: true,
+                    secondsVisible: false,
+                    rightOffset: 8,
+                },
+            });
+
+            psCandleSeries = psChartInstance.addCandlestickSeries({
+                upColor: '#10b981',
+                downColor: '#f43f5e',
+                borderUpColor: '#10b981',
+                borderDownColor: '#f43f5e',
+                wickUpColor: '#10b981',
+                wickDownColor: '#f43f5e',
+                priceFormat: {
+                    type: 'price',
+                    precision: dec,
+                    minMove: minMove,
+                },
+                autoscaleInfoProvider: (original) => {
+                    const res = original();
+                    if (!res || !res.priceRange) return res;
+                    let minP = res.priceRange.minValue;
+                    let maxP = res.priceRange.maxValue;
+                    for (const t of activeTrades) {
+                        for (const p of [t.open_price, t.close_price, t.sl, t.tp]) {
+                            if (p && p > 0) {
+                                if (p < minP) minP = p;
+                                if (p > maxP) maxP = p;
+                            }
+                        }
+                    }
+                    const pad = (maxP - minP) * 0.08 || (minMove * 10);
+                    return {
+                        priceRange: {
+                            minValue: minP - pad,
+                            maxValue: maxP + pad,
+                        },
+                    };
+                },
+            });
+
+            psCandleSeries.setData(candles);
+
+            // Frame the visible range around the focused trade(s)
+            if (activeTrades.length > 0) {
+                const minOpen = Math.min(...activeTrades.map(t => t.open_time > 0 ? t.open_time : t.close_time));
+                const maxClose = Math.max(...activeTrades.map(t => t.close_time > 0 ? t.close_time : t.open_time));
+                const startSnap = snapTimestampToCandle(minOpen, candles);
+                const endSnap = snapTimestampToCandle(maxClose, candles);
+                const startIdx = Math.max(0, candles.findIndex(c => c.time === startSnap) - 18);
+                const endIdx = Math.min(candles.length - 1, Math.max(startIdx + 25, candles.findIndex(c => c.time === endSnap) + 12));
+                if (candles[startIdx] && candles[endIdx]) {
+                    try {
+                        psChartInstance.timeScale().setVisibleRange({
+                            from: candles[startIdx].time,
+                            to: candles[endIdx].time,
+                        });
+                    } catch (e) {
+                        psChartInstance.timeScale().fitContent();
+                    }
+                } else {
+                    psChartInstance.timeScale().fitContent();
+                }
+            } else {
+                psChartInstance.timeScale().fitContent();
+            }
+
+            const renderStickers = () => {
+                if (!psChartInstance || !psCandleSeries) return;
+                const W = container.clientWidth || 800;
+                const H = container.clientHeight || 420;
+                const timeScale = psChartInstance.timeScale();
+
+                let stickersHtml = '';
+                let svgHtml = '';
+                const placedBoxes = [];
+
+                function resolveStickerPos(x, y, preferAbove = false) {
+                    let cy = preferAbove ? y - 15 : y + 5;
+                    for (let attempt = 0; attempt < 8; attempt++) {
+                        const collision = placedBoxes.some(b => Math.abs(b.x - x) < 24 && Math.abs(b.y - cy) < 13);
+                        if (!collision) break;
+                        cy += (preferAbove ? -13 : 13);
+                    }
+                    cy = Math.max(4, Math.min(H - 18, cy));
+                    placedBoxes.push({ x, y: cy });
+                    return cy;
+                }
+
+                for (let i = 0; i < activeTrades.length; i++) {
+                    const t = activeTrades[i];
+                    const openSnap = snapTimestampToCandle(t.open_time || t.close_time, candles);
+                    const closeSnap = snapTimestampToCandle(t.close_time || t.open_time, candles);
+                    if (!openSnap || !closeSnap) continue;
+
+                    const xOpen = timeScale.timeToCoordinate(openSnap);
+                    const xClose = timeScale.timeToCoordinate(closeSnap);
+                    const yEntry = t.open_price > 0 ? psCandleSeries.priceToCoordinate(t.open_price) : null;
+                    const yExit = t.close_price > 0 ? psCandleSeries.priceToCoordinate(t.close_price) : null;
+                    const ySl = t.sl > 0 ? psCandleSeries.priceToCoordinate(t.sl) : null;
+                    const yTp = t.tp > 0 ? psCandleSeries.priceToCoordinate(t.tp) : null;
+
+                    if (xOpen === null || yEntry === null) continue;
+
+                    // Draw subtle dashed SVG connectors linking the trade's Entry -> SL, TP, and Exit points
+                    if (ySl !== null) {
+                        svgHtml += `<line x1="${xOpen}" y1="${yEntry}" x2="${xOpen}" y2="${ySl}" stroke="#f43f5e" stroke-width="1" stroke-dasharray="2,2" opacity="0.45" />`;
+                    }
+                    if (yTp !== null) {
+                        svgHtml += `<line x1="${xOpen}" y1="${yEntry}" x2="${xOpen}" y2="${yTp}" stroke="#10b981" stroke-width="1" stroke-dasharray="2,2" opacity="0.45" />`;
+                    }
+                    if (xClose !== null && yExit !== null) {
+                        const tradeWin = t.profit >= 0;
+                        svgHtml += `<line x1="${xOpen}" y1="${yEntry}" x2="${xClose}" y2="${yExit}" stroke="${tradeWin ? '#4ade80' : '#f87171'}" stroke-width="1.2" stroke-dasharray="3,3" opacity="0.6" />`;
+                    }
+
+                    const clampX = rawX => Math.max(14, Math.min(W - 75, rawX));
+
+                    // 1. ENTRY Sticker (abbreviated: B or S, no numbers, micro 8px font)
+                    if (xOpen >= -10 && xOpen <= W + 10 && yEntry >= -10 && yEntry <= H + 10) {
+                        const isBuy = t.direction === 'BUY';
+                        const badgeY = resolveStickerPos(xOpen, yEntry, !isBuy);
+                        stickersHtml += `
+                            <div style="position:absolute; left:${xOpen}px; top:${yEntry}px; transform:translate(-50%,-50%);" class="w-1.5 h-1.5 rounded-full bg-indigo-400 border border-white"></div>
+                            <div style="position:absolute; left:${clampX(xOpen)}px; top:${badgeY}px; transform:translateX(-50%); font-size:8px; line-height:1; padding:2px 3.5px;" class="rounded bg-indigo-600/90 border border-indigo-300/50 text-white font-bold shadow whitespace-nowrap">
+                                ${isBuy ? 'B' : 'S'}
+                            </div>`;
+                    }
+
+                    // 2. SL Sticker (abbreviated: SL, no numbers, micro 8px font)
+                    if (ySl !== null && xOpen >= -10 && xOpen <= W + 10 && ySl >= -10 && ySl <= H + 10) {
+                        const slAbove = ySl < yEntry;
+                        const badgeY = resolveStickerPos(xOpen, ySl, slAbove);
+                        stickersHtml += `
+                            <div style="position:absolute; left:${xOpen}px; top:${ySl}px; transform:translate(-50%,-50%);" class="w-1.5 h-1.5 rounded-full bg-rose-500 border border-white"></div>
+                            <div style="position:absolute; left:${clampX(xOpen)}px; top:${badgeY}px; transform:translateX(-50%); font-size:8px; line-height:1; padding:2px 3.5px;" class="rounded bg-rose-600/90 border border-rose-300/50 text-white font-bold shadow whitespace-nowrap">
+                                SL
+                            </div>`;
+                    }
+
+                    // 3. TP Sticker (abbreviated: TP, no numbers, micro 8px font)
+                    if (yTp !== null && xOpen >= -10 && xOpen <= W + 10 && yTp >= -10 && yTp <= H + 10) {
+                        const tpAbove = yTp < yEntry;
+                        const badgeY = resolveStickerPos(xOpen, yTp, tpAbove);
+                        stickersHtml += `
+                            <div style="position:absolute; left:${xOpen}px; top:${yTp}px; transform:translate(-50%,-50%);" class="w-1.5 h-1.5 rounded-full bg-emerald-500 border border-white"></div>
+                            <div style="position:absolute; left:${clampX(xOpen)}px; top:${badgeY}px; transform:translateX(-50%); font-size:8px; line-height:1; padding:2px 3.5px;" class="rounded bg-emerald-600/90 border border-emerald-300/50 text-white font-bold shadow whitespace-nowrap">
+                                TP
+                            </div>`;
+                    }
+
+                    // 4. EXIT Sticker (abbreviated: EX, no numbers, micro 8px font)
+                    if (xClose !== null && yExit !== null && xClose >= -10 && xClose <= W + 10 && yExit >= -10 && yExit <= H + 10) {
+                        const isWin = t.profit >= 0;
+                        const badgeY = resolveStickerPos(xClose, yExit, isWin);
+                        const bgCls = isWin ? 'bg-amber-500/90 border-amber-200/60 text-slate-950' : 'bg-rose-800/90 border-rose-300/50 text-white';
+                        stickersHtml += `
+                            <div style="position:absolute; left:${xClose}px; top:${yExit}px; transform:translate(-50%,-50%);" class="w-1.5 h-1.5 rounded-full ${isWin ? 'bg-amber-400' : 'bg-rose-400'} border border-white"></div>
+                            <div style="position:absolute; left:${clampX(xClose)}px; top:${badgeY}px; transform:translateX(-50%); font-size:8px; line-height:1; padding:2px 3.5px;" class="rounded ${bgCls} border font-extrabold shadow whitespace-nowrap">
+                                EX
+                            </div>`;
+                    }
+                }
+
+                stickerLayer.innerHTML = stickersHtml;
+                if (svgLayer) svgLayer.innerHTML = svgHtml;
+            };
+
+            psChartInstance.timeScale().subscribeVisibleLogicalRangeChange(renderStickers);
+            psChartInstance.timeScale().subscribeVisibleTimeRangeChange(renderStickers);
+            psChartInstance.subscribeCrosshairMove(renderStickers);
+
+            // Prevent modal body from scrolling when wheel-zooming over the chart
+            container.onwheel = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            };
+            container.onmousedown = () => {
+                setTimeout(renderStickers, 30);
+            };
+            container.onmousemove = (e) => {
+                if (e.buttons) renderStickers();
+            };
+
+            if (typeof ResizeObserver !== 'undefined') {
+                psResizeObserver = new ResizeObserver(() => {
+                    if (psChartInstance && container.clientWidth > 0) {
+                        psChartInstance.applyOptions({ width: container.clientWidth, height: container.clientHeight || 420 });
+                        renderStickers();
+                    }
+                });
+                psResizeObserver.observe(container);
+            }
+
+            requestAnimationFrame(() => {
+                renderStickers();
+                setTimeout(renderStickers, 120);
+            });
         }
 
         // --- Settings Modal Logic ---

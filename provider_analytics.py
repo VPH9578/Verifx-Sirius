@@ -102,6 +102,15 @@ def ensure_schema(conn=None):
         conn.execute("ALTER TABLE trade_analytics ADD COLUMN account_id TEXT DEFAULT ''")
     except Exception:
         pass
+    for _col in ("sl REAL DEFAULT 0.0", "tp REAL DEFAULT 0.0"):
+        try:
+            conn.execute(f"ALTER TABLE trade_analytics ADD COLUMN {_col}")
+        except Exception:
+            pass
+        try:
+            conn.execute(f"ALTER TABLE trades ADD COLUMN {_col}")
+        except Exception:
+            pass
     conn.execute('CREATE INDEX IF NOT EXISTS idx_ta_account_provider ON trade_analytics(account_id, provider_id)')
     conn.commit()
     if own:
@@ -151,7 +160,11 @@ def build_magic_map(settings, default_magic):
 
 def classify_close(reason_code, exit_comment, pips, tp_level):
     c = (exit_comment or "").lower()
+    if "sirius be close" in c:
+        return "SL BE"
     if reason_code == DEAL_REASON_TP or c.startswith("[tp"):
+        if abs(pips) <= BE_TOLERANCE_PIPS:
+            return "SL BE"
         return f"TP{tp_level}" if tp_level in (1, 2, 3) else "TP"
     if reason_code == DEAL_REASON_SL or c.startswith("[sl"):
         if abs(pips) <= BE_TOLERANCE_PIPS:
@@ -160,7 +173,7 @@ def classify_close(reason_code, exit_comment, pips, tp_level):
     if reason_code == DEAL_REASON_SO or c.startswith("[so"):
         return "STOP OUT"
     if reason_code == DEAL_REASON_EXPERT:
-        return "COPIER CLOSE"
+        return "SL BE" if abs(pips) <= BE_TOLERANCE_PIPS else "COPIER CLOSE"
     if reason_code in (DEAL_REASON_CLIENT, DEAL_REASON_MOBILE, DEAL_REASON_WEB):
         return "MANUAL"
     return "OTHER"
@@ -207,7 +220,36 @@ def _compute_excursions(mt5, symbol, direction, open_time, close_time, open_pric
 # Sync: MT5 deal history -> trade_analytics
 # --------------------------------------------------------------------------
 
-def sync_from_mt5(mt5, magic_map, reset_ts=0, compute_excursions=True, max_excursion_fetches=400):
+def _extract_sl_tp_from_orders(orders_by_pos, pos_id, close_comment=""):
+    sl = 0.0
+    tp = 0.0
+    ords = orders_by_pos.get(int(pos_id or 0), [])
+    for o in ords:
+        o_sl = float(_attr(o, "sl", 0.0) or 0.0)
+        o_tp = float(_attr(o, "tp", 0.0) or 0.0)
+        if o_sl > 0 and sl <= 0:
+            sl = o_sl
+        if o_tp > 0 and tp <= 0:
+            tp = o_tp
+    if close_comment:
+        if sl <= 0:
+            m_sl = re.search(r"\[sl\s+([0-9.]+)\]", close_comment, re.IGNORECASE)
+            if m_sl:
+                try:
+                    sl = float(m_sl.group(1))
+                except Exception:
+                    pass
+        if tp <= 0:
+            m_tp = re.search(r"\[tp\s+([0-9.]+)\]", close_comment, re.IGNORECASE)
+            if m_tp:
+                try:
+                    tp = float(m_tp.group(1))
+                except Exception:
+                    pass
+    return round(sl, 5), round(tp, 5)
+
+
+def sync_from_mt5(mt5, magic_map, reset_ts=0, compute_excursions=True, max_excursion_fetches=400, account_id="acc_1"):
     """Read MT5 deal history and store every newly closed bot position.
 
     Read-only towards MT5 (history + rates only, never sends orders).
@@ -218,7 +260,9 @@ def sync_from_mt5(mt5, magic_map, reset_ts=0, compute_excursions=True, max_excur
     try:
         conn = db.get_db()
         ensure_schema(conn)
-        known = {r[0] for r in conn.execute("SELECT position_id FROM trade_analytics").fetchall()}
+        known_rows = conn.execute("SELECT position_id, open_time, COALESCE(sl, 0.0), COALESCE(tp, 0.0), COALESCE(account_id, '') FROM trade_analytics").fetchall()
+        known = {r[0] for r in known_rows}
+        needs_enrich = {r[0] for r in known_rows if not r[1] or (r[2] == 0.0 and r[3] == 0.0) or not r[4]}
 
         start_dt = datetime.fromtimestamp(reset_ts) if reset_ts and reset_ts > 0 else datetime(2020, 1, 1)
         deals = mt5.history_deals_get(start_dt, datetime.now() + timedelta(days=2))
@@ -226,8 +270,19 @@ def sync_from_mt5(mt5, magic_map, reset_ts=0, compute_excursions=True, max_excur
             conn.close()
             return {"status": "no_history", "error": str(_attr(mt5, "last_error", lambda: "")())}
 
+        orders = mt5.history_orders_get(start_dt, datetime.now() + timedelta(days=2)) or []
+        orders_by_pos = {}
+        for o in orders:
+            opid = int(_attr(o, "position_id", 0) or _attr(o, "ticket", 0) or 0)
+            if opid:
+                orders_by_pos.setdefault(opid, []).append(o)
+
         by_pos = {}
+        deal_by_ticket = {}
         for d in deals:
+            dtkt = int(_attr(d, "ticket", 0) or 0)
+            if dtkt:
+                deal_by_ticket[dtkt] = d
             if _attr(d, "type") not in (DEAL_TYPE_BUY, DEAL_TYPE_SELL):
                 continue
             pid = _attr(d, "position_id")
@@ -239,13 +294,58 @@ def sync_from_mt5(mt5, magic_map, reset_ts=0, compute_excursions=True, max_excur
             else:
                 by_pos[pid]["out"].append(d)
 
+        # Backfill any existing trade_analytics / trades rows that were inserted by close_deal.ticket (with open_time=0 or missing sl/tp)
+        for row_id in list(needs_enrich):
+            d_obj = deal_by_ticket.get(int(row_id))
+            real_pos_id = int(_attr(d_obj, "position_id", 0)) if d_obj else int(row_id)
+            grp = by_pos.get(real_pos_id)
+            if grp and grp["in"]:
+                entry = grp["in"][0]
+                in_vol = sum(float(_attr(x, "volume", 0.0)) for x in grp["in"]) or 1.0
+                direction = "BUY" if _attr(entry, "type") == DEAL_TYPE_BUY else "SELL"
+                open_time = int(min(_attr(x, "time") for x in grp["in"]))
+                open_price = sum(float(_attr(x, "price", 0.0)) * float(_attr(x, "volume", 0.0)) for x in grp["in"]) / in_vol
+                exits = sorted(grp["out"], key=lambda x: (_attr(x, "time"), _attr(x, "ticket"))) if grp["out"] else []
+                last_exit = exits[-1] if exits else d_obj
+                close_time = int(_attr(last_exit, "time", 0)) if last_exit else 0
+                close_comm = str(_attr(last_exit, "comment", "") or "") if last_exit else ""
+                sl_val, tp_val = _extract_sl_tp_from_orders(orders_by_pos, real_pos_id, close_comm)
+                symbol = _attr(entry, "symbol", "")
+                pip = get_pip_size(symbol)
+                sign = 1 if direction == "BUY" else -1
+                ex_row = conn.execute("SELECT close_price, account_id FROM trade_analytics WHERE position_id=?", (row_id,)).fetchone()
+                c_price = float(ex_row["close_price"]) if ex_row and ex_row["close_price"] else 0.0
+                pips = round((c_price - open_price) * sign / pip, 2) if c_price and open_price and pip else 0.0
+                dur = max(0, close_time - open_time) if close_time and open_time else 0
+                row_acc = (ex_row["account_id"] if ex_row and ex_row["account_id"] else account_id) or "acc_1"
+                conn.execute('''
+                    UPDATE trade_analytics
+                    SET direction=?, open_time=?, open_price=?, pips=?, duration_sec=?,
+                        sl=CASE WHEN COALESCE(sl,0.0)>0 THEN sl ELSE ? END,
+                        tp=CASE WHEN COALESCE(tp,0.0)>0 THEN tp ELSE ? END,
+                        account_id=?
+                    WHERE position_id=?
+                ''', (direction, open_time, round(open_price, 5), pips, dur, sl_val, tp_val, row_acc, row_id))
+                conn.execute('''
+                    UPDATE trades
+                    SET trade_type=?, open_time=?, open_price=?,
+                        sl=CASE WHEN COALESCE(sl,0.0)>0 THEN sl ELSE ? END,
+                        tp=CASE WHEN COALESCE(tp,0.0)>0 THEN tp ELSE ? END
+                    WHERE ticket=?
+                ''', (direction, open_time, round(open_price, 5), sl_val, tp_val, row_id))
+
         sym_cache = {}
         inserted = 0
         fetches = 0
         now_i = int(time.time())
 
         for pos_id, grp in by_pos.items():
-            if pos_id in known or not grp["in"] or not grp["out"]:
+            if not grp["in"] or not grp["out"]:
+                continue
+            exits = sorted(grp["out"], key=lambda x: (_attr(x, "time"), _attr(x, "ticket")))
+            last_exit = exits[-1]
+            last_exit_tkt = int(_attr(last_exit, "ticket", 0) or 0)
+            if pos_id in known or (last_exit_tkt and last_exit_tkt in known):
                 continue
             entry = grp["in"][0]
             magic = int(_attr(entry, "magic"))
@@ -256,8 +356,6 @@ def sync_from_mt5(mt5, magic_map, reset_ts=0, compute_excursions=True, max_excur
             if in_vol <= 0 or out_vol + 1e-9 < in_vol:
                 continue  # still (partially) open
 
-            exits = sorted(grp["out"], key=lambda x: (_attr(x, "time"), _attr(x, "ticket")))
-            last_exit = exits[-1]
             close_time = int(_attr(last_exit, "time"))
             if reset_ts and close_time < reset_ts:
                 continue
@@ -290,7 +388,9 @@ def sync_from_mt5(mt5, magic_map, reset_ts=0, compute_excursions=True, max_excur
             m_sig = re.search(r"(P\d+\s*T\d+|Trade\d+)", entry_comment, re.IGNORECASE)
             signal_ref = m_sig.group(1).upper().replace(" ", "") if m_sig else None
 
-            reason = classify_close(int(_attr(last_exit, "reason", -1)), _attr(last_exit, "comment", ""), pips, tp_level)
+            exit_comm = _attr(last_exit, "comment", "") or ""
+            reason = classify_close(int(_attr(last_exit, "reason", -1)), exit_comm, pips, tp_level)
+            sl_val, tp_val = _extract_sl_tp_from_orders(orders_by_pos, pos_id, exit_comm)
 
             mae = mfe = None
             if compute_excursions and fetches < max_excursion_fetches:
@@ -305,11 +405,12 @@ def sync_from_mt5(mt5, magic_map, reset_ts=0, compute_excursions=True, max_excur
                 INSERT OR REPLACE INTO trade_analytics
                 (position_id, provider_id, magic, symbol, direction, lots, open_time, close_time,
                  open_price, close_price, profit, commission, swap, pips, pip_size, mae_pips, mfe_pips,
-                 duration_sec, close_reason, tp_level, signal_ref, comment, synced_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 duration_sec, close_reason, tp_level, signal_ref, comment, synced_at, account_id, sl, tp)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ''', (int(pos_id), magic_map[magic], magic, symbol, direction, round(in_vol, 2), open_time, close_time,
                   open_price, close_price, round(profit, 2), round(commission, 2), round(swap, 2), pips, pip,
-                  mae, mfe, max(0, close_time - open_time), reason, tp_level, signal_ref, entry_comment, now_i))
+                  mae, mfe, max(0, close_time - open_time), reason, tp_level, signal_ref, entry_comment, now_i,
+                  str(account_id or "acc_1"), sl_val, tp_val))
             inserted += 1
 
         # Retry excursions that could not be computed earlier (e.g. rates not yet downloaded)
@@ -335,6 +436,49 @@ def sync_from_mt5(mt5, magic_map, reset_ts=0, compute_excursions=True, max_excur
         _sync_lock.release()
 
 
+def _load_state_ticket_sl_tp_map():
+    """Build a map of ticket -> (sl, tp) and fallback group list from trade_state_*.json files."""
+    import glob
+    import json
+    tkt_map = {}
+    fallback_groups = []
+    for path in glob.glob("trade_state*.json"):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            groups = (data.get("active_trade_groups") or {}).values()
+            for g in groups:
+                if not isinstance(g, dict):
+                    continue
+                g_sl = float(g.get("sl_price") or g.get("sl") or 0.0)
+                g_tp1 = float(g.get("tp1_price") or 0.0)
+                g_tp2 = float(g.get("tp2_price") or g_tp1 or 0.0)
+                g_tp3 = float(g.get("tp3_price") or g_tp2 or g_tp1 or 0.0)
+                for tk, ti in (g.get("tickets_info") or {}).items():
+                    if str(tk).isdigit() and isinstance(ti, dict):
+                        sl_v = float(ti.get("sl") or g_sl or 0.0)
+                        tp_v = float(ti.get("target_tp") or g_tp1 or 0.0)
+                        if sl_v > 0 or tp_v > 0:
+                            tkt_map[int(tk)] = (round(sl_v, 5), round(tp_v, 5))
+                for k, tp_v in [("tp1_ticket", g_tp1), ("tp2_ticket", g_tp2), ("tp3_ticket", g_tp3)]:
+                    t = g.get(k)
+                    if t and str(t).isdigit() and int(t) not in tkt_map:
+                        if g_sl > 0 or tp_v > 0:
+                            tkt_map[int(t)] = (round(g_sl, 5), round(tp_v, 5))
+                if g_sl > 0 or g_tp1 > 0:
+                    fallback_groups.append({
+                        "provider_id": str(g.get("provider_id") or ""),
+                        "created_at": int(g.get("created_at") or 0),
+                        "sl": round(g_sl, 5),
+                        "tp1": round(g_tp1, 5),
+                        "tp2": round(g_tp2, 5),
+                        "tp3": round(g_tp3, 5),
+                    })
+        except Exception:
+            pass
+    return tkt_map, fallback_groups
+
+
 def sync_from_trades_db(conn=None, reset_ts=0):
     """Sync closed trades from the general `trades` table into `trade_analytics`.
     This guarantees that both cTrader and MT5 trades recorded in `trades` table
@@ -345,7 +489,10 @@ def sync_from_trades_db(conn=None, reset_ts=0):
     try:
         ensure_schema(conn)
         c = conn.cursor()
-        known = {r[0] for r in c.execute("SELECT position_id FROM trade_analytics").fetchall()}
+        known_rows = c.execute("SELECT position_id, open_time, COALESCE(sl, 0.0), COALESCE(tp, 0.0) FROM trade_analytics").fetchall()
+        known = {r[0] for r in known_rows}
+        known_missing_meta = {r[0]: (r[1], r[2], r[3]) for r in known_rows if not r[1] or (r[2] == 0.0 and r[3] == 0.0)}
+        state_tkt_map, state_fallback_groups = _load_state_ticket_sl_tp_map() if known_missing_meta else ({}, [])
 
         # Build signatures (pid, close_time, round(profit, 2), acc_id, tp_level) of already recorded positions
         # ONLY for MT5 position_ids uploaded via sync_from_mt5 (where account_id is empty/acc_1),
@@ -365,6 +512,7 @@ def sync_from_trades_db(conn=None, reset_ts=0):
         all_trades = [dict(r) for r in c.fetchall()]
 
         inserted = 0
+        updated = 0
         now_ts = int(time.time())
         for t in all_trades:
             tkt = int(t.get("ticket") or 0)
@@ -373,6 +521,9 @@ def sync_from_trades_db(conn=None, reset_ts=0):
             close_time = int(t.get("close_time") or 0)
             profit = float(t.get("profit") or 0.0)
             close_reason = str(t.get("close_reason") or "TP/SL")
+            sl_val = float(t.get("sl") or 0.0)
+            tp_val = float(t.get("tp") or 0.0)
+            open_time = int(t.get("open_time") or 0)
 
             tp_level = 0
             m_tp = re.search(r"TP\s*(\d)", close_reason, re.IGNORECASE)
@@ -385,6 +536,28 @@ def sync_from_trades_db(conn=None, reset_ts=0):
             elif "TP3" in close_reason:
                 tp_level = 3
 
+            if sl_val == 0.0 and tp_val == 0.0 and tkt:
+                if tkt in state_tkt_map:
+                    sl_val, tp_val = state_tkt_map[tkt]
+                elif state_fallback_groups and open_time > 0:
+                    for fg in state_fallback_groups:
+                        if fg["provider_id"] == pid and abs(fg["created_at"] - open_time) <= 600:
+                            sl_val = fg["sl"]
+                            tp_val = fg["tp2"] if tp_level == 2 else (fg["tp3"] if tp_level == 3 else fg["tp1"])
+                            break
+
+            if tkt in known_missing_meta:
+                old_ot, old_sl, old_tp = known_missing_meta[tkt]
+                if (not old_ot and open_time > 0) or (old_sl == 0.0 and sl_val > 0) or (old_tp == 0.0 and tp_val > 0):
+                    conn.execute('''
+                        UPDATE trade_analytics
+                        SET open_time = CASE WHEN COALESCE(open_time, 0) > 0 THEN open_time ELSE ? END,
+                            sl = CASE WHEN COALESCE(sl, 0.0) > 0 THEN sl ELSE ? END,
+                            tp = CASE WHEN COALESCE(tp, 0.0) > 0 THEN tp ELSE ? END
+                        WHERE position_id = ?
+                    ''', (open_time, sl_val, tp_val, tkt))
+                    updated += 1
+
             sig = (pid, close_time, round(profit, 2), acc_id, tp_level)
             if not tkt or tkt in known:
                 continue
@@ -395,7 +568,6 @@ def sync_from_trades_db(conn=None, reset_ts=0):
             symbol = str(t.get("symbol") or "XAUUSD")
             direction = str(t.get("trade_type") or "BUY").upper()
             lots = float(t.get("lots") or 0.0)
-            open_time = int(t.get("open_time") or 0)
             open_price = float(t.get("open_price") or 0.0)
             close_price = float(t.get("close_price") or 0.0)
             magic = int(t.get("magic") or 0)
@@ -413,20 +585,20 @@ def sync_from_trades_db(conn=None, reset_ts=0):
                     position_id, provider_id, magic, symbol, direction, lots,
                     open_time, close_time, open_price, close_price, profit,
                     commission, swap, pips, pip_size, mae_pips, mfe_pips,
-                    duration_sec, close_reason, tp_level, signal_ref, comment, synced_at, account_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, 0.0, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)
+                    duration_sec, close_reason, tp_level, signal_ref, comment, synced_at, account_id, sl, tp
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, 0.0, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 tkt, pid, magic, symbol, direction, lots,
                 open_time, close_time, open_price, close_price, profit,
-                pips, pip_size, duration_sec, close_reason, tp_level, signal_ref, comment, now_ts, acc_id
+                pips, pip_size, duration_sec, close_reason, tp_level, signal_ref, comment, now_ts, acc_id, sl_val, tp_val
             ))
             inserted += 1
             known.add(tkt)
             existing_signatures.add(sig)
 
-        if inserted > 0:
+        if inserted > 0 or updated > 0:
             conn.commit()
-        return {"status": "ok", "inserted": inserted}
+        return {"status": "ok", "inserted": inserted, "updated": updated}
     finally:
         if own:
             conn.close()
@@ -613,6 +785,31 @@ def compute_provider_statistics(provider_id, base_balance=0.0, broker_offset=0, 
     ordered = [k for k in CLOSE_REASON_ORDER if k in reasons] + sorted(k for k in reasons if k not in CLOSE_REASON_ORDER)
     by_reason = [{"key": k, **_summary(reasons[k], base_balance)} for k in ordered]
 
+    trades_list = []
+    for r in rows:
+        ot = int(r.get("open_time") or 0)
+        ct = int(r.get("close_time") or 0)
+        trades_list.append({
+            "position_id": int(r["position_id"]),
+            "symbol": str(r["symbol"] or ""),
+            "direction": str(r["direction"] or "BUY"),
+            "lots": _r2(r["lots"]),
+            "open_time": ot,
+            "close_time": ct,
+            "open_time_str": _utc_dt(ot).strftime("%Y-%m-%d %H:%M:%S") if ot > 0 else None,
+            "close_time_str": _utc_dt(ct).strftime("%Y-%m-%d %H:%M:%S") if ct > 0 else None,
+            "open_price": float(r.get("open_price") or 0.0),
+            "close_price": float(r.get("close_price") or 0.0),
+            "sl": float(r.get("sl") or 0.0),
+            "tp": float(r.get("tp") or 0.0),
+            "profit": _r2(r["profit"]),
+            "pips": _r2(r["pips"]),
+            "pip_size": float(r.get("pip_size") or get_pip_size(r.get("symbol") or "XAUUSD")),
+            "close_reason": str(r.get("close_reason") or "OTHER"),
+            "tp_level": int(r.get("tp_level") or 0),
+            "duration": _fmt_duration(r.get("duration_sec")),
+        })
+
     return {
         "provider_id": str(provider_id),
         "base_balance": _r2(base_balance),
@@ -630,4 +827,5 @@ def compute_provider_statistics(provider_id, base_balance=0.0, broker_offset=0, 
         "by_hour": by_hour,
         "by_weekday": by_day_w,
         "by_close_reason": by_reason,
+        "trades": trades_list,
     }

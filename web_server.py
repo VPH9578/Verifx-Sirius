@@ -179,11 +179,14 @@ async def get_state(start_time: int = None, end_time: int = None):
                                 matched_pid = magic_to_provider[deal_magic]
                                 total_trade_profit += d.profit
                                 
-                                open_price = pos_open[d.position_id].price if d.position_id in pos_open else d.price
-                                if d.position_id not in pos_open:
+                                op_deal = pos_open.get(d.position_id)
+                                if not op_deal:
                                     in_deals = mt5.history_deals_get(ticket=d.position_id)
                                     if in_deals and len(in_deals) > 0:
-                                        open_price = in_deals[0].price
+                                        op_deal = in_deals[0]
+                                open_price = op_deal.price if op_deal else d.price
+                                open_time_val = int(getattr(op_deal, 'time', 0) or 0) if op_deal else 0
+                                open_dir = ('BUY' if op_deal.type == 0 else 'SELL') if op_deal else ('BUY' if d.type == 1 else 'SELL')
 
                                 # Determine close reason
                                 reason = "TP/SL"
@@ -195,9 +198,9 @@ async def get_state(start_time: int = None, end_time: int = None):
                                     ticket=d.ticket,
                                     provider_id=matched_pid,
                                     symbol=d.symbol,
-                                    trade_type='SELL' if d.type == 1 else 'BUY',
+                                    trade_type=open_dir,
                                     lots=d.volume,
-                                    open_time=0, 
+                                    open_time=open_time_val,
                                     close_time=d.time,
                                     open_price=open_price,
                                     close_price=d.price,
@@ -1144,12 +1147,292 @@ def get_provider_statistics(provider_id: str, account_id: Optional[str] = None, 
                                                broker_offset=broker_offset, reset_ts=reset_ts,
                                                account_id=target_acc_id)
         stats["provider_name"] = all_cfg[str(provider_id)].get("name") or f"Provider {provider_id}"
+        stats["account_id"] = target_acc_id
+        stats["platform"] = platform
         stats["sync"] = sync_info
         return JSONResponse(stats)
     except Exception as e:
         import traceback
         traceback.print_exc()
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/candles")
+def get_historical_candles(
+    symbol: str,
+    timeframe: str = "M15",
+    from_ts: int = 0,
+    to_ts: int = 0,
+    account_id: Optional[str] = None,
+    provider_id: Optional[str] = None,
+):
+    """Fetch historical OHLC candlesticks from MetaTrader 5 for the Trade History Chart.
+    Only enabled for MT5 accounts."""
+    try:
+        from datetime import datetime, timezone
+        import db
+        import provider_analytics as pa
+        from account_manager import AccountManager
+        from symbol_mapper import SymbolMapper
+
+        acc_mgr = AccountManager.get_instance()
+        acc_mgr.load_accounts()
+
+        target_acc_id = str(account_id or "").strip()
+        if not target_acc_id or target_acc_id not in acc_mgr.accounts_config:
+            if provider_id:
+                for a_id, a_cfg in acc_mgr.accounts_config.items():
+                    if str(provider_id) in [str(x) for x in a_cfg.get("providers", [])]:
+                        target_acc_id = a_id
+                        break
+        if not target_acc_id:
+            target_acc_id = acc_mgr.active_account_id or "acc_1"
+
+        acc_cfg = acc_mgr.accounts_config.get(target_acc_id, {})
+        platform = str(acc_cfg.get("platform", "mt5")).lower()
+        if platform not in ("mt5", "ctrader"):
+            return JSONResponse(
+                {"error": "Trade history charting is only supported on MetaTrader 5 and cTrader accounts.", "platform": platform},
+                status_code=400,
+            )
+
+        tf_str = str(timeframe or "M15").upper()
+        tf_sec_map = {
+            "M1": 60,
+            "M5": 300,
+            "M15": 900,
+            "M30": 1800,
+            "H1": 3600,
+            "H4": 14400,
+            "D1": 86400,
+        }
+        tf_sec = tf_sec_map.get(tf_str, 900)
+
+        raw_sym = str(symbol or "").strip()
+        if not raw_sym:
+            return JSONResponse({"error": "Missing symbol"}, status_code=400)
+
+        # If from_ts / to_ts not provided, auto-frame around the provider's trades on this symbol
+        if (from_ts <= 0 or to_ts <= 0) and provider_id:
+            conn = db.get_db()
+            row = conn.execute(
+                "SELECT MIN(CASE WHEN open_time > 0 THEN open_time ELSE close_time END), MAX(close_time) "
+                "FROM trade_analytics WHERE provider_id = ? AND account_id = ? AND symbol = ?",
+                (str(provider_id), target_acc_id, raw_sym),
+            ).fetchone()
+            conn.close()
+            if row and row[0] and row[1]:
+                from_ts = int(row[0])
+                to_ts = int(row[1])
+
+        now_ts = int(time.time())
+        if to_ts <= 0:
+            to_ts = now_ts
+        if from_ts <= 0 or from_ts >= to_ts:
+            from_ts = to_ts - 120 * tf_sec
+
+        # Add generous padding before open_time and after close_time so zooming out shows plenty of surrounding candles
+        fetch_from = max(0, int(from_ts) - 400 * tf_sec)
+        fetch_to = int(to_ts) + 250 * tf_sec
+        # Cap total span to at most 2500 bars so response is fast
+        if (fetch_to - fetch_from) // tf_sec > 2500:
+            fetch_from = fetch_to - 2500 * tf_sec
+
+        # --- cTrader Path ---
+        if platform == "ctrader":
+            worker_res = acc_mgr.get_candles(target_acc_id, raw_sym, tf_str, fetch_from, fetch_to, timeout=8.0)
+            if worker_res and worker_res.get("candles"):
+                worker_res["account_id"] = target_acc_id
+                worker_res["platform"] = "ctrader"
+                worker_res["pip_size"] = pa.get_pip_size(worker_res.get("symbol") or raw_sym)
+                return JSONResponse(worker_res)
+
+            # Direct fallback to local cTrader bridge if worker queue didn't respond
+            from ctrader_client import CTraderClient
+            ct_client = CTraderClient(
+                host=str(acc_cfg.get("ctrader_host") or "127.0.0.1"),
+                port=int(acc_cfg.get("ctrader_port") or 8888),
+                account_id=int(acc_cfg.get("ctrader_account_id") or 0),
+            )
+            try:
+                if ct_client.connect():
+                    resolved_sym = ct_client.resolve_symbol(raw_sym) or SymbolMapper.resolve_symbol(target_acc_id, raw_sym) or raw_sym
+                    s_info = ct_client.get_symbol_info(resolved_sym)
+                    digits = int(getattr(s_info, "digits", 2) or 2) if s_info else 2
+
+                    bridge_tf = tf_str
+                    agg_sec = 0
+                    if tf_str == "M30":
+                        bridge_tf, agg_sec = "M15", 1800
+                    elif tf_str == "H4":
+                        bridge_tf, agg_sec = "H1", 14400
+                    elif tf_str == "D1":
+                        bridge_tf, agg_sec = "H1", 86400
+
+                    res = ct_client.send_command(
+                        {
+                            "cmd": "GET_TRENDBARS",
+                            "symbol": resolved_sym,
+                            "timeframe": bridge_tf,
+                            "from_ts": int(fetch_from),
+                            "to_ts": int(fetch_to),
+                        },
+                        timeout=12.0,
+                    )
+                    raw_bars = (res.get("bars") or []) if (res and res.get("ok")) else []
+                    if not raw_bars:
+                        for fb_tf, fb_sec in [("M5", 300), ("M15", 900), ("H1", 3600)]:
+                            if fb_tf == bridge_tf:
+                                continue
+                            fb_res = ct_client.send_command(
+                                {
+                                    "cmd": "GET_TRENDBARS",
+                                    "symbol": resolved_sym,
+                                    "timeframe": fb_tf,
+                                    "from_ts": max(0, int(fetch_from) - 100 * fb_sec),
+                                    "to_ts": int(fetch_to) + 100 * fb_sec,
+                                },
+                                timeout=12.0,
+                            )
+                            if fb_res and fb_res.get("ok") and fb_res.get("bars"):
+                                raw_bars = fb_res.get("bars") or []
+                                tf_str = fb_tf
+                                agg_sec = 0
+                                break
+                    candles = []
+                    seen_t = set()
+                    for r in raw_bars:
+                        t_val = int(r["time"])
+                        if t_val in seen_t:
+                            continue
+                        seen_t.add(t_val)
+                        candles.append({
+                            "time": t_val,
+                            "open": float(r["open"]),
+                            "high": float(r["high"]),
+                            "low": float(r["low"]),
+                            "close": float(r["close"]),
+                        })
+                    candles.sort(key=lambda x: x["time"])
+
+                    if agg_sec > 0 and candles:
+                        buckets = {}
+                        for c in candles:
+                            b_time = (c["time"] // agg_sec) * agg_sec
+                            if b_time not in buckets:
+                                buckets[b_time] = dict(c, time=b_time)
+                            else:
+                                b = buckets[b_time]
+                                if c["high"] > b["high"]:
+                                    b["high"] = c["high"]
+                                if c["low"] < b["low"]:
+                                    b["low"] = c["low"]
+                                b["close"] = c["close"]
+                        candles = [buckets[k] for k in sorted(buckets.keys())]
+
+                    return JSONResponse({
+                        "symbol": resolved_sym,
+                        "requested_symbol": raw_sym,
+                        "account_id": target_acc_id,
+                        "platform": "ctrader",
+                        "timeframe": tf_str,
+                        "digits": digits,
+                        "pip_size": pa.get_pip_size(resolved_sym),
+                        "candles": candles,
+                    })
+            finally:
+                try:
+                    ct_client.disconnect()
+                except Exception:
+                    pass
+
+            return JSONResponse({"error": "cTrader bridge not connected", "platform": "ctrader", "candles": []}, status_code=503)
+
+        # --- MT5 Path ---
+        import MetaTrader5 as mt5
+        tf_map = {
+            "M1": (mt5.TIMEFRAME_M1, 60),
+            "M5": (mt5.TIMEFRAME_M5, 300),
+            "M15": (mt5.TIMEFRAME_M15, 900),
+            "M30": (mt5.TIMEFRAME_M30, 1800),
+            "H1": (mt5.TIMEFRAME_H1, 3600),
+            "H4": (mt5.TIMEFRAME_H4, 14400),
+            "D1": (mt5.TIMEFRAME_D1, 86400),
+        }
+        tf_const, tf_sec = tf_map.get(tf_str, (mt5.TIMEFRAME_M15, 900))
+
+        # 1. Try worker process if this is a secondary MT5 account with an active worker
+        if target_acc_id != "acc_1":
+            worker_res = acc_mgr.get_candles(target_acc_id, raw_sym, tf_str, fetch_from, fetch_to, timeout=3.0)
+            if worker_res and worker_res.get("candles"):
+                worker_res["account_id"] = target_acc_id
+                worker_res["pip_size"] = pa.get_pip_size(worker_res.get("symbol") or raw_sym)
+                return JSONResponse(worker_res)
+
+        # 2. Direct MT5 fetch (uses existing main-process MT5 connection or initializes terminal)
+        if not is_connected():
+            mt5_path = acc_cfg.get("mt5_path") or (acc_mgr.accounts_config.get("acc_1", {}) or {}).get("mt5_path")
+            if mt5_path:
+                mt5.initialize(path=mt5_path)
+            else:
+                mt5.initialize()
+
+        resolved_sym = SymbolMapper.resolve_symbol(target_acc_id, raw_sym) or raw_sym
+        s_info = mt5.symbol_info(resolved_sym)
+        if not s_info and resolved_sym != raw_sym:
+            s_info = mt5.symbol_info(raw_sym)
+            if s_info:
+                resolved_sym = raw_sym
+        if not s_info:
+            # Try common suffix fallback (.sc)
+            for cand in (f"{raw_sym.split('.')[0]}.sc", raw_sym.split('.')[0]):
+                s_info = mt5.symbol_info(cand)
+                if s_info:
+                    resolved_sym = cand
+                    break
+
+        if s_info and not s_info.visible:
+            mt5.symbol_select(resolved_sym, True)
+        digits = int(getattr(s_info, "digits", 2) or 2) if s_info else 2
+
+        dt_from = datetime.fromtimestamp(fetch_from, tz=timezone.utc)
+        dt_to = datetime.fromtimestamp(fetch_to, tz=timezone.utc)
+        rates = mt5.copy_rates_range(resolved_sym, tf_const, dt_from, dt_to)
+        if rates is None or len(rates) == 0:
+            rates = mt5.copy_rates_from(resolved_sym, tf_const, dt_to, 300)
+        if rates is None or len(rates) == 0:
+            rates = mt5.copy_rates_from_pos(resolved_sym, tf_const, 0, 300)
+
+        candles = []
+        seen_t = set()
+        if rates is not None and len(rates) > 0:
+            for r in rates:
+                t_val = int(r["time"])
+                if t_val in seen_t:
+                    continue
+                seen_t.add(t_val)
+                candles.append({
+                    "time": t_val,
+                    "open": float(r["open"]),
+                    "high": float(r["high"]),
+                    "low": float(r["low"]),
+                    "close": float(r["close"]),
+                })
+            candles.sort(key=lambda x: x["time"])
+
+        return JSONResponse({
+            "symbol": resolved_sym,
+            "requested_symbol": raw_sym,
+            "account_id": target_acc_id,
+            "timeframe": tf_str,
+            "digits": digits,
+            "pip_size": pa.get_pip_size(resolved_sym),
+            "candles": candles,
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({"error": str(e), "candles": []}, status_code=500)
 
 SETTINGS_FILE = "providers_config.json"
 SETTINGS_BACKUP_FILE = "providers_config.json.bak"

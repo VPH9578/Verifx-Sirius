@@ -156,6 +156,9 @@ class CTraderAccountWorker:
                     elif cmd == "GET_STATE":
                         state = self.get_account_state()
                         self.out_queue.put({"account_id": self.account_id, "req_id": req_id, "state": state})
+                    elif cmd == "GET_CANDLES":
+                        res = self.get_candles(payload)
+                        self.out_queue.put({"account_id": self.account_id, "req_id": req_id, "result": res})
                     elif cmd == "RESET_STATE":
                         target_pids = payload.get("provider_ids")
                         acc_pids = set(str(p) for p in self.account_config.get("providers", []))
@@ -217,6 +220,107 @@ class CTraderAccountWorker:
             except Exception:
                 pass
             print(f"[{self.account_id}] cTrader Worker terminated cleanly.")
+
+    def get_candles(self, payload: dict) -> dict:
+        try:
+            if not self.client.is_authorized:
+                self.connect()
+            if not self.client.is_authorized:
+                return {"error": "cTrader bridge not connected", "candles": []}
+
+            raw_sym = str(payload.get("symbol") or "").strip()
+            tf_str = str(payload.get("timeframe") or "M15").upper()
+            from_ts = int(payload.get("from_ts") or 0)
+            to_ts = int(payload.get("to_ts") or int(time.time()))
+
+            resolved = self.client.resolve_symbol(raw_sym) or raw_sym
+            s_info = self.client.get_symbol_info(resolved)
+            digits = int(getattr(s_info, "digits", 2) or 2) if s_info else (5 if (0 < float(payload.get("hint_price") or 0) < 20) else 2)
+
+            # SiriusBridge cBot natively supports M1, M5, M15, H1; aggregate M30 from M15 and H4/D1 from H1 for full compatibility
+            bridge_tf = tf_str
+            agg_sec = 0
+            if tf_str == "M30":
+                bridge_tf = "M15"
+                agg_sec = 1800
+            elif tf_str == "H4":
+                bridge_tf = "H1"
+                agg_sec = 14400
+            elif tf_str == "D1":
+                bridge_tf = "H1"
+                agg_sec = 86400
+
+            res = self.client.send_command(
+                {
+                    "cmd": "GET_TRENDBARS",
+                    "symbol": resolved,
+                    "timeframe": bridge_tf,
+                    "from_ts": int(from_ts),
+                    "to_ts": int(to_ts),
+                },
+                timeout=12.0,
+            )
+            raw_bars = (res.get("bars") or []) if (res and res.get("ok")) else []
+            if not raw_bars:
+                for fb_tf, fb_sec in [("M5", 300), ("M15", 900), ("H1", 3600)]:
+                    if fb_tf == bridge_tf:
+                        continue
+                    fb_res = self.client.send_command(
+                        {
+                            "cmd": "GET_TRENDBARS",
+                            "symbol": resolved,
+                            "timeframe": fb_tf,
+                            "from_ts": max(0, int(from_ts) - 100 * fb_sec),
+                            "to_ts": int(to_ts) + 100 * fb_sec,
+                        },
+                        timeout=12.0,
+                    )
+                    if fb_res and fb_res.get("ok") and fb_res.get("bars"):
+                        raw_bars = fb_res.get("bars") or []
+                        tf_str = fb_tf
+                        agg_sec = 0
+                        break
+
+            candles = []
+            seen_t = set()
+            for r in raw_bars:
+                t_val = int(r["time"])
+                if t_val in seen_t:
+                    continue
+                seen_t.add(t_val)
+                candles.append({
+                    "time": t_val,
+                    "open": float(r["open"]),
+                    "high": float(r["high"]),
+                    "low": float(r["low"]),
+                    "close": float(r["close"]),
+                })
+            candles.sort(key=lambda x: x["time"])
+
+            if agg_sec > 0 and candles:
+                buckets = {}
+                for c in candles:
+                    b_time = (c["time"] // agg_sec) * agg_sec
+                    if b_time not in buckets:
+                        buckets[b_time] = {
+                            "time": b_time,
+                            "open": c["open"],
+                            "high": c["high"],
+                            "low": c["low"],
+                            "close": c["close"],
+                        }
+                    else:
+                        b = buckets[b_time]
+                        if c["high"] > b["high"]:
+                            b["high"] = c["high"]
+                        if c["low"] < b["low"]:
+                            b["low"] = c["low"]
+                        b["close"] = c["close"]
+                candles = [buckets[k] for k in sorted(buckets.keys())]
+
+            return {"symbol": resolved, "timeframe": tf_str, "digits": digits, "candles": candles}
+        except Exception as e:
+            return {"error": str(e), "candles": []}
 
     def get_account_state(self) -> dict:
         if not self.client.is_authorized:
@@ -985,15 +1089,41 @@ class CTraderAccountWorker:
             return False
 
         success = False
+        state_changed = False
         for pos in positions:
             sym_info = self.client.get_symbol_info(pos.symbol)
             digits = sym_info.digits if sym_info else 2
             tick = self.client.get_tick(pos.symbol)
             spread_val = (tick.ask - tick.bid) if tick else ((sym_info.spread * sym_info.point) if sym_info else 0.0)
-            be_price = pos.price_open + spread_val if pos.type == 0 else pos.price_open - spread_val
-            if pos.sl == 0 or (pos.type == 0 and be_price > pos.sl) or (pos.type == 1 and be_price < pos.sl):
-                if self.client.modify_position_sltp(pos.ticket, sl=be_price, tp=pos.tp, digits=digits):
+            be_price = round(pos.price_open + spread_val if pos.type == 0 else pos.price_open - spread_val, digits)
+            curr_price = (tick.bid if pos.type == 0 else tick.ask) if tick else getattr(pos, "price_current", pos.price_open)
+            is_in_profit = (pos.type == 0 and curr_price > be_price) or (pos.type == 1 and curr_price < be_price)
+
+            for grp in self.active_trade_groups.values():
+                grp_tkts = [grp.get("tp1_ticket"), grp.get("tp2_ticket"), grp.get("tp3_ticket")]
+                if pos.ticket in grp_tkts:
+                    grp.setdefault("be_targets", {})[str(pos.ticket)] = {
+                        "price": be_price,
+                        "mode": "SL" if is_in_profit else "TP",
+                    }
+                    if not is_in_profit:
+                        grp["be_recovery"] = True
+                    state_changed = True
                     success = True
+
+            if is_in_profit:
+                if pos.sl == 0 or (pos.type == 0 and be_price > pos.sl) or (pos.type == 1 and be_price < pos.sl):
+                    if self.client.modify_position_sltp(pos.ticket, sl=be_price, tp=pos.tp, digits=digits):
+                        success = True
+            else:
+                if (pos.type == 0 and curr_price >= be_price) or (pos.type == 1 and curr_price <= be_price):
+                    if self.client.close_position(pos.ticket, pos.volume, pos.symbol):
+                        success = True
+                else:
+                    if self.client.modify_position_sltp(pos.ticket, sl=pos.sl, tp=be_price, digits=digits):
+                        success = True
+        if state_changed:
+            self.save_state()
         return success
 
     def reconcile_pending_and_positions(self, positions: list, pending_orders: list, history: list) -> bool:
@@ -1206,7 +1336,11 @@ class CTraderAccountWorker:
                     profit = round(float(h_deal.get("profit") or 0.0), 2)
                     vol = float(h_deal.get("volume") or vol)
 
-                    if profit > 0:
+                    be_targets_grp = group.get("be_targets") or {}
+                    is_be_target_close = str(tkt) in be_targets_grp and abs(profit) < 0.5
+                    if is_be_target_close or (abs(profit) < 0.5 and (group.get("tp1_processed") or group.get("be_recovery"))):
+                        reason = "BE"
+                    elif profit > 0:
                         reason = tier_lbl
                     elif group.get("tp1_processed") and sl_price > 0 and open_price_val > 0 and abs(close_price - open_price_val) <= abs(open_price_val - sl_price) * 0.25:
                         reason = "BE"
@@ -1224,6 +1358,8 @@ class CTraderAccountWorker:
                     state_changed = True
 
                     if close_time >= reset_ts:
+                        t_sl = float(t_info.get("sl") or sl_price or 0.0)
+                        t_tp = float(target_tp or t_info.get("target_tp") or 0.0)
                         db.save_trade(
                             ticket=tkt,
                             provider_id=provider_id,
@@ -1237,7 +1373,9 @@ class CTraderAccountWorker:
                             profit=profit,
                             magic=magic,
                             close_reason=reason,
-                            account_id=self.account_id
+                            account_id=self.account_id,
+                            sl=round(t_sl, 5),
+                            tp=round(t_tp, 5)
                         )
                         print(f"[{self.account_id}] Synced closed trade to DB: Ticket={tkt}, P={provider_id}, {tier_lbl}, Profit=${profit:.2f}, Reason={reason}")
 
@@ -1408,12 +1546,41 @@ class CTraderAccountWorker:
                             self.client.modify_position_sltp(pos.ticket, sl=clamped_sl, tp=pos.tp, digits=digits)
                             print(f"[{self.account_id}] [GAP-GUARD] Clamped stretched SL on #{pos.ticket} from {pos.sl} to {clamped_sl} (intended dist={intended_sl_dist:.2f})")
 
+            # Enforce any pending BE targets (underwater BE recovery via TP or stops_level fallback)
+            be_targets = group.get("be_targets") or {}
+            if be_targets:
+                tick_be = self.client.get_tick(symbol)
+                point_be = sym_info.point if (sym_info and sym_info.point) else (10 ** -digits)
+                for _tkt in [tp1_ticket, tp2_ticket, tp3_ticket]:
+                    if not _tkt or _tkt not in open_tickets:
+                        continue
+                    t_cfg = be_targets.get(str(_tkt))
+                    if not t_cfg:
+                        continue
+                    pos_be = open_tickets[_tkt]
+                    be_p = round(float(t_cfg.get("price") or 0.0), digits)
+                    be_mode = t_cfg.get("mode", "TP")
+                    if be_p <= 0:
+                        continue
+                    curr_p = (tick_be.bid if pos_be.type == 0 else tick_be.ask) if tick_be else getattr(pos_be, "price_current", pos_be.price_open)
+                    if be_mode == "TP":
+                        if (pos_be.type == 0 and curr_p >= be_p) or (pos_be.type == 1 and curr_p <= be_p):
+                            self.client.close_position(pos_be.ticket, pos_be.volume, pos_be.symbol)
+                        elif abs((pos_be.tp or 0.0) - be_p) > point_be * 0.5:
+                            self.client.modify_position_sltp(pos_be.ticket, sl=pos_be.sl, tp=be_p, digits=digits)
+                    elif be_mode == "SL":
+                        if (pos_be.type == 0 and curr_p <= be_p) or (pos_be.type == 1 and curr_p >= be_p):
+                            self.client.close_position(pos_be.ticket, pos_be.volume, pos_be.symbol)
+                        elif pos_be.sl == 0 or (pos_be.type == 0 and be_p > pos_be.sl + point_be * 0.5) or (pos_be.type == 1 and be_p < pos_be.sl - point_be * 0.5):
+                            self.client.modify_position_sltp(pos_be.ticket, sl=be_p, tp=pos_be.tp, digits=digits)
+
             settings = group.get("settings", {})
             be_at = settings.get("sl_breakeven_at", "TP1")
             cancelled_tickets = group.get("cancelled_tickets") or {}
             tp1_was_cancelled = str(tp1_ticket) in cancelled_tickets if tp1_ticket else False
+            tp1_is_be_tp = str(tp1_ticket) in be_targets and be_targets[str(tp1_ticket)].get("mode") == "TP"
 
-            if not tp1_open and not tp1_pending and not tp1_was_cancelled and tp1_ticket and not group.get("tp1_processed", False):
+            if not tp1_open and not tp1_pending and not tp1_was_cancelled and tp1_ticket and not group.get("tp1_processed", False) and not tp1_is_be_tp:
                 group["tp1_processed"] = True
                 state_changed = True
                 if be_at == "TP1":

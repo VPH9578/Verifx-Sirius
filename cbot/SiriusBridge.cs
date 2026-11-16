@@ -622,7 +622,10 @@ namespace cAlgo.Robots
             TimeFrame tf = TimeFrame.Minute;
             if (tfStr == "M5") tf = TimeFrame.Minute5;
             else if (tfStr == "M15") tf = TimeFrame.Minute15;
+            else if (tfStr == "M30") tf = TimeFrame.Minute30;
             else if (tfStr == "H1") tf = TimeFrame.Hour;
+            else if (tfStr == "H4") tf = TimeFrame.Hour4;
+            else if (tfStr == "D1") tf = TimeFrame.Daily;
 
             Bars bars = MarketData.GetBars(tf, s.Name);
             DateTime fromDt = DateTimeOffset.FromUnixTimeSeconds(fromSec).UtcDateTime;

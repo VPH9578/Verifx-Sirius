@@ -135,6 +135,15 @@ def init_db():
         c.execute("ALTER TABLE trade_analytics ADD COLUMN account_id TEXT DEFAULT ''")
     except:
         pass
+    for _col in ("sl REAL DEFAULT 0.0", "tp REAL DEFAULT 0.0"):
+        try:
+            c.execute(f"ALTER TABLE trades ADD COLUMN {_col}")
+        except:
+            pass
+        try:
+            c.execute(f"ALTER TABLE trade_analytics ADD COLUMN {_col}")
+        except:
+            pass
 
     c.execute("CREATE INDEX IF NOT EXISTS idx_trades_acc_prov ON trades(account_id, provider_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_signals_acc_prov ON trade_signals(account_id, provider_id)")
@@ -212,13 +221,24 @@ def get_recent_errors(limit: int = 50, provider_id: str = None) -> list:
         conn.close()
     return rows
 
-def save_trade(ticket, provider_id, symbol, trade_type, lots, open_time, close_time, open_price, close_price, profit, magic, close_reason="TP/SL", account_id=""):
+def save_trade(ticket, provider_id, symbol, trade_type, lots, open_time, close_time, open_price, close_price, profit, magic, close_reason="TP/SL", account_id="", sl=0.0, tp=0.0):
     conn = get_db()
     c = conn.cursor()
+    try:
+        existing = c.execute("SELECT open_time, sl, tp FROM trades WHERE ticket = ?", (ticket,)).fetchone()
+        if existing:
+            if not open_time and existing["open_time"]:
+                open_time = existing["open_time"]
+            if not sl and existing["sl"]:
+                sl = existing["sl"]
+            if not tp and existing["tp"]:
+                tp = existing["tp"]
+    except Exception:
+        pass
     c.execute('''
-        INSERT OR REPLACE INTO trades (ticket, provider_id, symbol, trade_type, lots, open_time, close_time, open_price, close_price, profit, magic, close_reason, account_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (ticket, str(provider_id), symbol, trade_type, lots, open_time, close_time, open_price, close_price, profit, magic, close_reason, str(account_id or "")))
+        INSERT OR REPLACE INTO trades (ticket, provider_id, symbol, trade_type, lots, open_time, close_time, open_price, close_price, profit, magic, close_reason, account_id, sl, tp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (ticket, str(provider_id), symbol, trade_type, lots, int(open_time or 0), close_time, open_price, close_price, profit, magic, close_reason, str(account_id or ""), float(sl or 0.0), float(tp or 0.0)))
     conn.commit()
     conn.close()
 

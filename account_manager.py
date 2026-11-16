@@ -249,6 +249,25 @@ class AccountManager:
             self.save_accounts()
         return res
 
+    def get_candles(self, acc_id: str, symbol: str, timeframe: str, from_ts: int, to_ts: int, timeout: float = 4.0) -> Optional[dict]:
+        w = self.workers.get(acc_id)
+        if not w or not w["process"].is_alive():
+            return None
+        req_id = f"candles_{acc_id}_{int(time.time()*1000)}"
+        w["in_q"].put({
+            "cmd": "GET_CANDLES",
+            "req_id": req_id,
+            "payload": {"symbol": symbol, "timeframe": timeframe, "from_ts": from_ts, "to_ts": to_ts}
+        })
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            self._drain_worker_out_q(acc_id)
+            if req_id in self.pending_results:
+                msg = self.pending_results.pop(req_id)
+                return msg.get("result")
+            time.sleep(0.03)
+        return None
+
     def set_active_account(self, acc_id: str) -> bool:
         self.load_accounts()
         if acc_id in self.accounts_config:

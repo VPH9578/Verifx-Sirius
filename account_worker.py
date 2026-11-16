@@ -191,6 +191,9 @@ class MT5AccountWorker:
                     elif cmd == "GET_STATE":
                         state = self.get_account_state()
                         self.out_queue.put({"account_id": self.account_id, "req_id": req_id, "state": state})
+                    elif cmd == "GET_CANDLES":
+                        res = self.get_candles(payload)
+                        self.out_queue.put({"account_id": self.account_id, "req_id": req_id, "result": res})
                     elif cmd == "RESET_STATE":
                         target_pids = payload.get("provider_ids")
                         acc_pids = set(str(p) for p in self.account_config.get("providers", []))
@@ -282,7 +285,7 @@ class MT5AccountWorker:
                     "open_time": p.time
                 })
 
-        return {
+            return {
             "account_id": self.account_id,
             "connected": info is not None,
             "login": getattr(info, "login", self.config["mt5_login"]),
@@ -293,6 +296,56 @@ class MT5AccountWorker:
             "margin_free": getattr(info, "margin_free", 0.0),
             "open_positions": pos_list
         }
+
+    def get_candles(self, payload: dict) -> dict:
+        try:
+            from datetime import datetime, timezone
+            raw_sym = str(payload.get("symbol") or "").strip()
+            tf_str = str(payload.get("timeframe") or "M15").upper()
+            from_ts = int(payload.get("from_ts") or 0)
+            to_ts = int(payload.get("to_ts") or int(time.time()))
+
+            tf_map = {
+                "M1": (mt5.TIMEFRAME_M1, 60),
+                "M5": (mt5.TIMEFRAME_M5, 300),
+                "M15": (mt5.TIMEFRAME_M15, 900),
+                "M30": (mt5.TIMEFRAME_M30, 1800),
+                "H1": (mt5.TIMEFRAME_H1, 3600),
+                "H4": (mt5.TIMEFRAME_H4, 14400),
+                "D1": (mt5.TIMEFRAME_D1, 86400),
+            }
+            tf_const, tf_sec = tf_map.get(tf_str, (mt5.TIMEFRAME_M15, 900))
+            sym = self.resolve_symbol(raw_sym) or raw_sym
+            s_info = mt5.symbol_info(sym)
+            if s_info and not s_info.visible:
+                mt5.symbol_select(sym, True)
+            digits = int(getattr(s_info, "digits", 2) or 2) if s_info else 2
+
+            dt_from = datetime.fromtimestamp(max(0, from_ts), tz=timezone.utc)
+            dt_to = datetime.fromtimestamp(max(from_ts + tf_sec, to_ts), tz=timezone.utc)
+            rates = mt5.copy_rates_range(sym, tf_const, dt_from, dt_to)
+            if rates is None or len(rates) == 0:
+                rates = mt5.copy_rates_from(sym, tf_const, dt_to, 300)
+
+            candles = []
+            seen_t = set()
+            if rates is not None and len(rates) > 0:
+                for r in rates:
+                    t_val = int(r["time"])
+                    if t_val in seen_t:
+                        continue
+                    seen_t.add(t_val)
+                    candles.append({
+                        "time": t_val,
+                        "open": float(r["open"]),
+                        "high": float(r["high"]),
+                        "low": float(r["low"]),
+                        "close": float(r["close"]),
+                    })
+                candles.sort(key=lambda x: x["time"])
+            return {"symbol": sym, "timeframe": tf_str, "digits": digits, "candles": candles}
+        except Exception as e:
+            return {"error": str(e), "candles": []}
 
     def execute_signal(self, signal: dict, message_id: int = None, provider_id: str = "1", settings: dict = None) -> list:
         import copy
@@ -1171,33 +1224,86 @@ class MT5AccountWorker:
         return modified_results
 
     def set_be_for_provider(self, provider_id: str = None):
-        """Moves all open positions for this provider (or latest active group) to true Break-Even ($0 PnL accounting for spread)."""
+        """Moves all open positions for this provider (or latest active group) to true Break-Even ($0 PnL accounting for spread).
+        If a position is in profit, moves SL to BE. If a position is in the negative (underwater), moves TP to BE
+        so the trade closes automatically when price recovers to Break-Even (with a polling fallback if within stops_level).
+        """
         positions = mt5.positions_get()
         if not positions:
             return False
         
         target_pids = [str(provider_id)] if provider_id else None
         success = False
+        state_changed = False
         for pos in positions:
             if target_pids and not self._matches_provider(pos, target_pids):
                 continue
             sym_info = mt5.symbol_info(pos.symbol)
             digits = sym_info.digits if sym_info else 2
+            point = sym_info.point if (sym_info and sym_info.point) else (10 ** -digits)
             entry = pos.price_open
             tick = mt5.symbol_info_tick(pos.symbol)
-            spread_val = (tick.ask - tick.bid) if tick else ((sym_info.spread * sym_info.point) if sym_info else 0.0)
-            be_price = entry + spread_val if pos.type == mt5.ORDER_TYPE_BUY else entry - spread_val
-            if pos.sl == 0 or (pos.type == mt5.ORDER_TYPE_BUY and be_price > pos.sl) or (pos.type == mt5.ORDER_TYPE_SELL and be_price < pos.sl):
-                req = {
-                    "action": mt5.TRADE_ACTION_SLTP,
-                    "symbol": pos.symbol,
-                    "sl": round(be_price, digits),
-                    "tp": pos.tp,
-                    "position": pos.ticket
-                }
-                res = mt5.order_send(req)
-                if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+            spread_val = (tick.ask - tick.bid) if tick else ((sym_info.spread * point) if sym_info else 0.0)
+            be_price = round(entry + spread_val if pos.type == mt5.ORDER_TYPE_BUY else entry - spread_val, digits)
+            curr_price = (tick.bid if pos.type == mt5.ORDER_TYPE_BUY else tick.ask) if tick else getattr(pos, "price_current", entry)
+            is_in_profit = (pos.type == mt5.ORDER_TYPE_BUY and curr_price > be_price) or (pos.type == mt5.ORDER_TYPE_SELL and curr_price < be_price)
+
+            for grp in self.active_trade_groups.values():
+                grp_tkts = [grp.get("tp1_ticket"), grp.get("tp2_ticket"), grp.get("tp3_ticket")]
+                if pos.ticket in grp_tkts:
+                    grp.setdefault("be_targets", {})[str(pos.ticket)] = {
+                        "price": be_price,
+                        "mode": "SL" if is_in_profit else "TP",
+                    }
+                    if not is_in_profit:
+                        grp["be_recovery"] = True
+                    state_changed = True
                     success = True
+
+            if is_in_profit:
+                if pos.sl == 0 or (pos.type == mt5.ORDER_TYPE_BUY and be_price > pos.sl) or (pos.type == mt5.ORDER_TYPE_SELL and be_price < pos.sl):
+                    req = {
+                        "action": mt5.TRADE_ACTION_SLTP,
+                        "symbol": pos.symbol,
+                        "sl": round(be_price, digits),
+                        "tp": pos.tp,
+                        "position": pos.ticket
+                    }
+                    res = mt5.order_send(req)
+                    if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                        success = True
+            else:
+                if (pos.type == mt5.ORDER_TYPE_BUY and curr_price >= be_price) or (pos.type == mt5.ORDER_TYPE_SELL and curr_price <= be_price):
+                    close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                    req = {
+                        "action": mt5.TRADE_ACTION_DEAL,
+                        "symbol": pos.symbol,
+                        "volume": pos.volume,
+                        "type": close_type,
+                        "price": round(curr_price, digits),
+                        "deviation": self.deviation,
+                        "magic": pos.magic,
+                        "comment": "Sirius BE Close",
+                        "type_time": mt5.ORDER_TIME_GTC,
+                        "type_filling": mt5.ORDER_FILLING_IOC,
+                        "position": pos.ticket,
+                    }
+                    res = mt5.order_send(req)
+                    if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                        success = True
+                else:
+                    req = {
+                        "action": mt5.TRADE_ACTION_SLTP,
+                        "symbol": pos.symbol,
+                        "sl": pos.sl,
+                        "tp": round(be_price, digits),
+                        "position": pos.ticket
+                    }
+                    res = mt5.order_send(req)
+                    if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                        success = True
+        if state_changed:
+            self.save_state()
         return success
 
     def manage_trailing_stops(self):
@@ -1260,12 +1366,82 @@ class MT5AccountWorker:
                 state_changed = True
                 continue
 
+            # Enforce any pending BE targets (underwater BE recovery via TP or stops_level fallback)
+            be_targets = group.get("be_targets") or {}
+            if be_targets:
+                tick_be = mt5.symbol_info_tick(symbol)
+                point_be = sym_info.point if (sym_info and sym_info.point) else (10 ** -digits)
+                min_stop_be = max((sym_info.trade_stops_level if sym_info else 0) * point_be, 2 * point_be)
+                for _tkt in [tp1_ticket, tp2_ticket, tp3_ticket]:
+                    if not _tkt or _tkt not in open_tickets:
+                        continue
+                    t_cfg = be_targets.get(str(_tkt))
+                    if not t_cfg:
+                        continue
+                    pos_be = open_tickets[_tkt]
+                    be_p = round(float(t_cfg.get("price") or 0.0), digits)
+                    be_mode = t_cfg.get("mode", "TP")
+                    if be_p <= 0:
+                        continue
+                    curr_p = (tick_be.bid if pos_be.type == mt5.ORDER_TYPE_BUY else tick_be.ask) if tick_be else getattr(pos_be, "price_current", pos_be.price_open)
+                    if be_mode == "TP":
+                        if (pos_be.type == mt5.ORDER_TYPE_BUY and curr_p >= be_p) or (pos_be.type == mt5.ORDER_TYPE_SELL and curr_p <= be_p):
+                            close_type = mt5.ORDER_TYPE_SELL if pos_be.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                            mt5.order_send({
+                                "action": mt5.TRADE_ACTION_DEAL,
+                                "symbol": symbol,
+                                "volume": pos_be.volume,
+                                "type": close_type,
+                                "price": round(curr_p, digits),
+                                "deviation": self.deviation,
+                                "magic": pos_be.magic,
+                                "comment": "Sirius BE Close",
+                                "type_time": mt5.ORDER_TIME_GTC,
+                                "type_filling": mt5.ORDER_FILLING_IOC,
+                                "position": pos_be.ticket,
+                            })
+                        elif abs((pos_be.tp or 0.0) - be_p) > point_be * 0.5:
+                            if (pos_be.type == mt5.ORDER_TYPE_BUY and be_p >= curr_p + min_stop_be) or (pos_be.type == mt5.ORDER_TYPE_SELL and be_p <= curr_p - min_stop_be):
+                                mt5.order_send({
+                                    "action": mt5.TRADE_ACTION_SLTP,
+                                    "position": pos_be.ticket,
+                                    "symbol": symbol,
+                                    "sl": pos_be.sl,
+                                    "tp": be_p,
+                                })
+                    elif be_mode == "SL":
+                        if (pos_be.type == mt5.ORDER_TYPE_BUY and curr_p <= be_p) or (pos_be.type == mt5.ORDER_TYPE_SELL and curr_p >= be_p):
+                            close_type = mt5.ORDER_TYPE_SELL if pos_be.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                            mt5.order_send({
+                                "action": mt5.TRADE_ACTION_DEAL,
+                                "symbol": symbol,
+                                "volume": pos_be.volume,
+                                "type": close_type,
+                                "price": round(curr_p, digits),
+                                "deviation": self.deviation,
+                                "magic": pos_be.magic,
+                                "comment": "Sirius BE Close",
+                                "type_time": mt5.ORDER_TIME_GTC,
+                                "type_filling": mt5.ORDER_FILLING_IOC,
+                                "position": pos_be.ticket,
+                            })
+                        elif pos_be.sl == 0 or (pos_be.type == mt5.ORDER_TYPE_BUY and be_p > pos_be.sl + point_be * 0.5) or (pos_be.type == mt5.ORDER_TYPE_SELL and be_p < pos_be.sl - point_be * 0.5):
+                            if (pos_be.type == mt5.ORDER_TYPE_BUY and be_p <= curr_p - min_stop_be) or (pos_be.type == mt5.ORDER_TYPE_SELL and be_p >= curr_p + min_stop_be):
+                                mt5.order_send({
+                                    "action": mt5.TRADE_ACTION_SLTP,
+                                    "position": pos_be.ticket,
+                                    "symbol": symbol,
+                                    "sl": be_p,
+                                    "tp": pos_be.tp,
+                                })
+
             # Check if TP1 closed and move remaining to Break-Even / Entry
             settings = group.get("settings", {})
             be_at = settings.get("sl_breakeven_at", "TP1")
             entry = group.get("entry") or 0.0
+            tp1_is_be_tp = str(tp1_ticket) in be_targets and be_targets[str(tp1_ticket)].get("mode") == "TP"
 
-            if not tp1_open and not tp1_pending and tp1_ticket and not group.get("tp1_processed", False):
+            if not tp1_open and not tp1_pending and tp1_ticket and not group.get("tp1_processed", False) and not tp1_is_be_tp:
                 group["tp1_processed"] = True
                 state_changed = True
                 if be_at == "TP1":
@@ -1393,11 +1569,18 @@ class MT5AccountWorker:
 
             conn = db.get_db()
             existing_rows = conn.execute(
-                "SELECT ticket, close_reason FROM trades WHERE account_id = ?",
+                "SELECT ticket, close_reason, COALESCE(sl, 0.0) as sl, COALESCE(tp, 0.0) as tp FROM trades WHERE account_id = ?",
                 (self.account_id,)
             ).fetchall()
-            existing_tickets = {int(r["ticket"]): r["close_reason"] for r in existing_rows}
+            existing_tickets = {int(r["ticket"]): (r["close_reason"], float(r["sl"] or 0.0), float(r["tp"] or 0.0)) for r in existing_rows}
             conn.close()
+
+            orders = mt5.history_orders_get(start_dt, datetime.now() + timedelta(days=2)) or []
+            orders_by_pos = {}
+            for o in orders:
+                opid = int(getattr(o, "position_id", 0) or getattr(o, "ticket", 0) or 0)
+                if opid:
+                    orders_by_pos.setdefault(opid, []).append(o)
 
             all_pos_records = []
             new_trades_saved = 0
@@ -1442,17 +1625,30 @@ class MT5AccountWorker:
                     ), 2)
 
                     out_comm = str(getattr(close_deal, "comment", "") or "").lower()
-                    if _is_deal_tp(close_deal):
-                        close_reason = f"TP{tp_lvl}"
+                    if "sirius be close" in out_comm:
+                        close_reason = "BE"
+                    elif _is_deal_tp(close_deal):
+                        close_reason = "BE" if abs(profit) < 0.5 else f"TP{tp_lvl}"
                     elif "[sl" in out_comm or getattr(close_deal, "reason", None) == 4:
                         close_reason = f"TP{tp_lvl}" if profit > 0 else ("BE" if abs(profit) < 0.5 else "SL")
                     elif "manual" in out_comm or "sirius close" in out_comm:
                         close_reason = "MANUAL"
                     else:
-                        close_reason = f"TP{tp_lvl}" if profit >= 0 else "SL"
+                        close_reason = "BE" if abs(profit) < 0.5 else (f"TP{tp_lvl}" if profit > 0 else "SL")
+
+                    pos_orders = orders_by_pos.get(int(pos_id), [])
+                    sl_val = next((float(o.sl) for o in pos_orders if getattr(o, "sl", 0.0) and float(o.sl) > 0), 0.0)
+                    tp_val = next((float(o.tp) for o in pos_orders if getattr(o, "tp", 0.0) and float(o.tp) > 0), 0.0)
 
                     deal_tkt = int(close_deal.ticket)
-                    if deal_tkt not in existing_tickets or existing_tickets.get(deal_tkt) != close_reason:
+                    ex_info = existing_tickets.get(deal_tkt)
+                    needs_save = (
+                        ex_info is None
+                        or ex_info[0] != close_reason
+                        or (ex_info[1] == 0.0 and sl_val > 0)
+                        or (ex_info[2] == 0.0 and tp_val > 0)
+                    )
+                    if needs_save:
                         db.save_trade(
                             ticket=deal_tkt,
                             provider_id=matched_pid,
@@ -1466,9 +1662,11 @@ class MT5AccountWorker:
                             profit=profit,
                             magic=magic_val,
                             close_reason=close_reason,
-                            account_id=self.account_id
+                            account_id=self.account_id,
+                            sl=round(sl_val, 5),
+                            tp=round(tp_val, 5)
                         )
-                        existing_tickets[deal_tkt] = close_reason
+                        existing_tickets[deal_tkt] = (close_reason, sl_val, tp_val)
                         new_trades_saved += 1
 
                 all_pos_records.append({
@@ -1530,13 +1728,13 @@ class MT5AccountWorker:
                 all_closed = len(closed_legs) == len(cl["positions"])
                 status = "CLOSED" if all_closed else "OPEN"
 
-                tp1_hit = any(p["tp_lvl"] == 1 and (_is_deal_tp(p["close_deal"]) or p["profit"] > 0) for p in closed_legs)
-                tp2_hit = any(p["tp_lvl"] == 2 and _is_deal_tp(p["close_deal"]) for p in closed_legs)
-                tp3_hit = any(p["tp_lvl"] == 3 and _is_deal_tp(p["close_deal"]) for p in closed_legs)
+                tp1_hit = any(p["tp_lvl"] == 1 and p["close_reason"] == "TP1" for p in closed_legs)
+                tp2_hit = any(p["tp_lvl"] == 2 and p["close_reason"] == "TP2" for p in closed_legs)
+                tp3_hit = any(p["tp_lvl"] == 3 and p["close_reason"] == "TP3" for p in closed_legs)
 
                 sl_hit = False
                 if not tp1_hit and not tp2_hit and not tp3_hit:
-                    if all(p["profit"] < 0 or "[sl" in str(getattr(p["close_deal"], "comment", "") or "").lower() for p in closed_legs):
+                    if all(p["close_reason"] == "SL" or (p["profit"] < -0.5 and p["close_reason"] != "BE") for p in closed_legs):
                         sl_hit = True
 
                 risk_amt = 0.0
