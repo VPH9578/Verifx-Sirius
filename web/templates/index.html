@@ -2678,6 +2678,10 @@
         <!-- Top Fullscreen Toolbar -->
         <div class="px-4 py-2.5 border-b border-theme-border bg-theme-sidebar flex flex-wrap items-center justify-between gap-2 shrink-0">
             <div class="flex flex-wrap items-center gap-3 min-w-0">
+                <button type="button" onclick="backToProviderStatsFromChart()" class="px-3 py-1.5 rounded-lg bg-theme-card hover:bg-theme-accent/25 text-slate-100 hover:text-white border border-theme-border hover:border-theme-accent/50 text-xs font-extrabold transition-all flex items-center gap-1.5 shrink-0 shadow" title="Return to Provider Statistics">
+                    <i class="fa-solid fa-arrow-left text-theme-accent"></i> Back to Statistics
+                </button>
+                <div class="h-5 w-px bg-theme-border hidden sm:block"></div>
                 <div class="flex items-center gap-2">
                     <span class="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 shrink-0">
                         <i class="fa-solid fa-chart-line text-sm"></i>
@@ -5271,6 +5275,12 @@
             destroyPsChart();
             const fsModal = document.getElementById('fullscreen-trade-chart-modal');
             if (fsModal) fsModal.classList.add('hidden');
+        }
+
+        function backToProviderStatsFromChart() {
+            closeFullscreenTradeChart();
+            const statsModal = document.getElementById('provider-stats-modal');
+            if (statsModal) statsModal.classList.remove('hidden');
         }
 
         function toggleFullscreenTradeDrawer() {
