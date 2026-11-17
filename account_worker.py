@@ -1241,12 +1241,13 @@ class MT5AccountWorker:
             sym_info = mt5.symbol_info(pos.symbol)
             digits = sym_info.digits if sym_info else 2
             point = sym_info.point if (sym_info and sym_info.point) else (10 ** -digits)
+            min_stop = max((sym_info.trade_stops_level if sym_info else 0) * point, 2 * point)
             entry = pos.price_open
             tick = mt5.symbol_info_tick(pos.symbol)
             spread_val = (tick.ask - tick.bid) if tick else ((sym_info.spread * point) if sym_info else 0.0)
             be_price = round(entry + spread_val if pos.type == mt5.ORDER_TYPE_BUY else entry - spread_val, digits)
             curr_price = (tick.bid if pos.type == mt5.ORDER_TYPE_BUY else tick.ask) if tick else getattr(pos, "price_current", entry)
-            is_in_profit = (pos.type == mt5.ORDER_TYPE_BUY and curr_price > be_price) or (pos.type == mt5.ORDER_TYPE_SELL and curr_price < be_price)
+            is_in_profit = (pos.type == mt5.ORDER_TYPE_BUY and curr_price >= be_price + min_stop) or (pos.type == mt5.ORDER_TYPE_SELL and curr_price <= be_price - min_stop)
 
             for grp in self.active_trade_groups.values():
                 grp_tkts = [grp.get("tp1_ticket"), grp.get("tp2_ticket"), grp.get("tp3_ticket")]

@@ -1697,7 +1697,7 @@ def set_breakeven_for_provider(provider_id: str = None) -> bool:
         spread_val = (tick.ask - tick.bid) if tick else ((sym_info.spread * point) if sym_info else 0.0)
         be_price = round(entry + spread_val if pos.type == mt5.ORDER_TYPE_BUY else entry - spread_val, digits)
         curr_price = (tick.bid if pos.type == mt5.ORDER_TYPE_BUY else tick.ask) if tick else getattr(pos, "price_current", entry)
-        is_in_profit = (pos.type == mt5.ORDER_TYPE_BUY and curr_price > be_price) or (pos.type == mt5.ORDER_TYPE_SELL and curr_price < be_price)
+        is_in_profit = (pos.type == mt5.ORDER_TYPE_BUY and curr_price >= be_price + min_stop) or (pos.type == mt5.ORDER_TYPE_SELL and curr_price <= be_price - min_stop)
 
         # Register BE target on any matching active trade group so manage_trailing_stops can act as fallback
         for grp in active_trade_groups.values():

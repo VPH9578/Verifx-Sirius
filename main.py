@@ -506,8 +506,8 @@ async def start_with_dashboard():
                         msg_lower = message_text.lower().strip()
                         update_handled = False
 
-                        # 1. Check for Set Break-Even / Entry commands (e.g. "Set BE", "Set BE if you wish", "Make sure BE is set", "move sl to be", "putting BE", "close at BE")
-                        if len(msg_lower) < 120 and re.search(r'\b(set\s*be|be\s+is\s+set|move\s*sl\s*to\s*be|sl\s*(?:to|at)?\s*be|sl\s*to\s*entry|(?:move\s*)?tp\s*(?:to|at)?\s*(?:be|entry)|(?:close|exit)\s+(?:at|on)\s+(?:be|break\s*even|breakeven|entry)|break\s*even|breakeven|put(?:ting)?\s+be|be\s+now)\b', msg_lower):
+                        # 1. Check for Set Break-Even / Entry commands (e.g. "Set BE", "Setting BE guys", "Set BE if you wish", "Make sure BE is set", "move sl to be", "putting BE", "close at BE")
+                        if len(msg_lower) < 120 and re.search(r'\b(set(?:ting)?\s*be|be\s+is\s+set|move\s*sl\s*to\s*be|sl\s*(?:to|at)?\s*be|sl\s*to\s*entry|(?:move\s*)?tp\s*(?:to|at)?\s*(?:be|entry)|(?:close|exit)\s+(?:at|on)\s+(?:be|break\s*even|breakeven|entry)|break\s*even|breakeven|put(?:ting)?\s+be|go(?:ing)?\s+be|lock(?:ing)?\s+(?:in\s+)?be|be\s+now)\b', msg_lower):
                             ok = await asyncio.to_thread(set_breakeven_for_provider, prov_id)
                             print(f"[UPDATE] Set BE executed for Provider {prov_id}: {ok}")
                             update_handled = True

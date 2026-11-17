@@ -401,6 +401,7 @@ def test_provider_analytics_classify():
     assert pa.classify_close(pa.DEAL_REASON_TP, "[tp 2670.00]", 200.0, 1) == "TP1"
     assert pa.classify_close(pa.DEAL_REASON_EXPERT, "Sirius BE Close", 0.5, 1) == "SL BE"
     assert classify_update_message("Set BE")["action"] == "SET_BE"
+    assert classify_update_message("Setting BE guys")["action"] == "SET_BE"
     assert classify_update_message("Close at BE")["action"] == "SET_BE"
     assert classify_update_message("Move TP to BE")["action"] == "SET_BE"
     print("  [PASS] provider_analytics & scraper classify underwater BE closes and phrases accurately")
